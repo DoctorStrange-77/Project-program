@@ -1,0 +1,6 @@
+{
+  "name": "Gestore Schede e Clienti Personal Trainer",
+  "description": "Applicazione professionale per personal trainer e coach per gestire clienti, esercizi e schede di allenamento.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
