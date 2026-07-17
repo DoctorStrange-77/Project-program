@@ -415,6 +415,3 @@ export function runExerciseGroupTests() {
   }
   console.log('=== SELF-TESTS COMPLETED ===');
 }
-
-// Run tests automatically on module import to report results in console
-runExerciseGroupTests();
