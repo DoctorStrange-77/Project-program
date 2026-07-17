@@ -64,6 +64,7 @@ export default function BackupManager({
   const [importedBackupData, setImportedBackupData] = useState<any | null>(null);
   const [backupWasConverted, setBackupWasConverted] = useState(false);
   const [absentKeys, setAbsentKeys] = useState<string[]>([]);
+  const [invalidKeys, setInvalidKeys] = useState<string[]>([]);
   const [hasPreImportBackup, setHasPreImportBackup] = useState(false);
   const [confirmClearStep, setConfirmClearStep] = useState(0); // 0 = default, 1 = first warning, 2 = final double warning
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -114,19 +115,24 @@ export default function BackupManager({
         const parsedData = JSON.parse(fileContent);
 
         // 1. Normalizzazione se formato precedente
-        const { normalizedData, wasConverted, absentKeys: detectedAbsentKeys } = normalizeBackup(parsedData);
+        const { normalizedData, wasConverted, absentKeys: detectedAbsentKeys, invalidKeys: detectedInvalidKeys } = normalizeBackup(parsedData);
 
-        // 2. Validazione della struttura normalizzata
-        const validation = validateBackup(normalizedData);
-        if (!validation.isValid) {
-          throw new Error(validation.error || 'Struttura di backup non valida.');
+        // 2. Validazione della struttura normalizzata (solo se NON ci sono invalidKeys)
+        if (detectedInvalidKeys.length === 0) {
+          const validation = validateBackup(normalizedData);
+          if (!validation.isValid) {
+            throw new Error(validation.error || 'Struttura di backup non valida.');
+          }
         }
 
         // Mostriamo l'anteprima/riassunto prima di procedere
         setImportedBackupData(normalizedData);
         setBackupWasConverted(wasConverted);
         setAbsentKeys(detectedAbsentKeys);
-        if (wasConverted) {
+        setInvalidKeys(detectedInvalidKeys);
+        if (detectedInvalidKeys.length > 0) {
+          onShowToast('Attenzione: Il backup contiene campi non validi o danneggiati!', 'error');
+        } else if (wasConverted) {
           onShowToast('Backup in formato precedente letto e convertito con successo! Verifica il riepilogo.', 'warning');
         } else {
           onShowToast('Backup letto con successo! Verifica il riepilogo prima di procedere.', 'info');
@@ -136,6 +142,7 @@ export default function BackupManager({
         setImportedBackupData(null);
         setBackupWasConverted(false);
         setAbsentKeys([]);
+        setInvalidKeys([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
       }
     };
@@ -167,6 +174,7 @@ export default function BackupManager({
           setImportedBackupData(null);
           setBackupWasConverted(false);
           setAbsentKeys([]);
+          setInvalidKeys([]);
           if (fileInputRef.current) fileInputRef.current.value = '';
 
           onShowToast('Database interamente ripristinato dal file di backup!', 'success');
@@ -219,6 +227,7 @@ export default function BackupManager({
       setImportedBackupData(null);
       setBackupWasConverted(false);
       setAbsentKeys([]);
+      setInvalidKeys([]);
       if (fileInputRef.current) fileInputRef.current.value = '';
 
       onShowToast('Dati uniti con successo! Eventuali conflitti sono stati risolti.', 'success');
@@ -457,6 +466,7 @@ export default function BackupManager({
                 setImportedBackupData(null);
                 setBackupWasConverted(false);
                 setAbsentKeys([]);
+                setInvalidKeys([]);
                 if (fileInputRef.current) fileInputRef.current.value = '';
               }}
               className="p-1 hover:bg-white/5 rounded text-white/60 hover:text-white"
@@ -472,13 +482,33 @@ export default function BackupManager({
             </div>
           )}
 
-          {absentKeys.length > 0 && (
+          {invalidKeys.length > 0 && (
             <div className="bg-red-950/20 border border-red-900/40 p-3 rounded-xl flex flex-col gap-2 text-red-400 text-[11px] font-bold">
               <div className="flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-                <span>Attenzione: Questo backup è parziale. Mancano le seguenti sezioni principali:</span>
+                <span>Errore: Questo backup contiene sezioni danneggiate o non valide:</span>
               </div>
               <ul className="list-disc pl-5 space-y-1 font-semibold text-red-300">
+                {invalidKeys.map(k => (
+                  <li key={k}>{k === 'clients' ? 'Atleti (clients)' :
+                               k === 'exercises' ? 'Esercizi (exercises)' :
+                               k === 'plans' ? 'Schede (plans)' :
+                               k === 'templates' ? 'Modelli (templates)' :
+                               k === 'logbook' ? 'Rilevazioni Logbook (logbook)' :
+                               k === 'coachConfig' ? 'Configurazione Coach (coachConfig)' : k}</li>
+                ))}
+              </ul>
+              <span>Sia la modalità "Sostituisci" che la modalità "Unisci" sono state disabilitate per proteggere l'integrità dei dati locali.</span>
+            </div>
+          )}
+
+          {absentKeys.length > 0 && invalidKeys.length === 0 && (
+            <div className="bg-[#1a1200] border border-amber-900/40 p-3 rounded-xl flex flex-col gap-2 text-amber-400 text-[11px] font-bold">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>Attenzione: Questo backup è parziale. Mancano le seguenti sezioni principali:</span>
+              </div>
+              <ul className="list-disc pl-5 space-y-1 font-semibold text-amber-300">
                 {absentKeys.map(k => (
                   <li key={k}>{k === 'clients' ? 'Atleti (clients)' :
                                k === 'exercises' ? 'Esercizi (exercises)' :
@@ -502,31 +532,31 @@ export default function BackupManager({
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">
               <span className="block text-[10px] uppercase font-bold text-white/40">Atleti</span>
               <span className="block text-sm font-black mt-1 text-white">
-                {absentKeys.includes('clients') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.clients?.length || 0)}
+                {invalidKeys.includes('clients') ? <span className="text-red-500 font-bold">Danneggiato</span> : absentKeys.includes('clients') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.clients?.length || 0)}
               </span>
             </div>
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">
               <span className="block text-[10px] uppercase font-bold text-white/40">Esercizi</span>
               <span className="block text-sm font-black mt-1 text-white">
-                {absentKeys.includes('exercises') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.exercises?.length || 0)}
+                {invalidKeys.includes('exercises') ? <span className="text-red-500 font-bold">Danneggiato</span> : absentKeys.includes('exercises') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.exercises?.length || 0)}
               </span>
             </div>
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">
               <span className="block text-[10px] uppercase font-bold text-white/40">Schede</span>
               <span className="block text-sm font-black mt-1 text-white">
-                {absentKeys.includes('plans') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.plans?.length || 0)}
+                {invalidKeys.includes('plans') ? <span className="text-red-500 font-bold">Danneggiato</span> : absentKeys.includes('plans') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.plans?.length || 0)}
               </span>
             </div>
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">
               <span className="block text-[10px] uppercase font-bold text-white/40">Modelli</span>
               <span className="block text-sm font-black mt-1 text-white">
-                {absentKeys.includes('templates') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.templates?.length || 0)}
+                {invalidKeys.includes('templates') ? <span className="text-red-500 font-bold">Danneggiato</span> : absentKeys.includes('templates') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.templates?.length || 0)}
               </span>
             </div>
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">
               <span className="block text-[10px] uppercase font-bold text-white/40">Logbook</span>
               <span className="block text-sm font-black mt-1 text-white">
-                {absentKeys.includes('logbook') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.logbook?.length || 0)}
+                {invalidKeys.includes('logbook') ? <span className="text-red-500 font-bold">Danneggiato</span> : absentKeys.includes('logbook') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.logbook?.length || 0)}
               </span>
             </div>
           </div>
@@ -534,9 +564,9 @@ export default function BackupManager({
           <div className="flex flex-col sm:flex-row gap-3 pt-2">
             <button
               onClick={() => handleReplaceAll(importedBackupData)}
-              disabled={absentKeys.length > 0}
+              disabled={absentKeys.length > 0 || invalidKeys.length > 0}
               className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 border rounded-xl text-xs font-bold uppercase tracking-wider transition-all shadow ${
-                absentKeys.length > 0
+                (absentKeys.length > 0 || invalidKeys.length > 0)
                   ? 'bg-neutral-900/40 text-white/20 border-white/5 cursor-not-allowed'
                   : 'bg-red-600 hover:bg-red-500 border-red-500/20 text-white cursor-pointer'
               }`}
@@ -547,8 +577,13 @@ export default function BackupManager({
 
             <button
               onClick={() => handleMergeData(importedBackupData)}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-[#CCFF00] rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow"
-              style={{ borderColor: config.primaryColor, color: config.primaryColor }}
+              disabled={invalidKeys.length > 0}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 border rounded-xl text-xs font-bold uppercase tracking-wider transition-all shadow ${
+                invalidKeys.length > 0
+                  ? 'bg-neutral-900/40 text-white/20 border-white/5 cursor-not-allowed'
+                  : 'bg-neutral-900 hover:bg-neutral-800 border-white/10 text-[#CCFF00] cursor-pointer'
+              }`}
+              style={invalidKeys.length > 0 ? {} : { borderColor: config.primaryColor, color: config.primaryColor }}
             >
               <RefreshCw className="w-4 h-4" />
               Unisci con i dati esistenti
@@ -607,7 +642,7 @@ export default function BackupManager({
             <div className="flex-1 flex flex-col gap-2 p-3 bg-red-900/40 border-2 border-red-600 rounded-xl">
               <p className="text-[10px] text-white font-black leading-normal flex items-center gap-1">
                 <ShieldAlert className="w-4 h-4 text-white shrink-0" />
-                CONFERMA FINALE: Non potrai annullare questa operazione. Eliminare tutto?
+                CONFERMA FINALE: Verranno eliminati tutti i dati dell’app. Potrai annullare l’operazione tramite il punto di ripristino creato automaticamente. Eliminare tutto?
               </p>
               <div className="flex gap-2 text-[10px] font-bold uppercase">
                 <button

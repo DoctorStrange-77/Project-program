@@ -89,17 +89,23 @@ export default function App() {
     // Run initial data migrations
     runDataMigrations();
 
+    const isInitialized = localStorage.getItem('pt_archive_initialized') === 'true';
+
     // 1. Load Coach Configuration
     const savedConfig = localStorage.getItem(STORAGE_KEYS.CONFIG);
     if (savedConfig) {
       setConfig(JSON.parse(savedConfig));
     } else {
-      setConfig({
+      const defaultConfig = {
         nomeProgramma: '',
         nomeCoach: '',
         primaryColor: '#CCFF00',
         isConfigured: false
-      });
+      };
+      setConfig(defaultConfig);
+      if (!isInitialized) {
+        localStorage.setItem(STORAGE_KEYS.CONFIG, JSON.stringify(defaultConfig));
+      }
     }
 
     // 2. Load/Seed Clients
@@ -107,9 +113,12 @@ export default function App() {
     if (savedClients) {
       setClients(JSON.parse(savedClients));
     } else {
-      // Seed initial demo clients
-      setClients(DEMO_CLIENTS);
-      localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(DEMO_CLIENTS));
+      if (!isInitialized) {
+        setClients(DEMO_CLIENTS);
+        localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(DEMO_CLIENTS));
+      } else {
+        setClients([]);
+      }
     }
 
     // 3. Load/Seed Exercises
@@ -117,22 +126,25 @@ export default function App() {
     if (savedExercises) {
       setExercises(JSON.parse(savedExercises));
     } else {
-      // Seed initial 30+ exercises
-      setExercises(INITIAL_EXERCISES);
-      localStorage.setItem(STORAGE_KEYS.EXERCISES, JSON.stringify(INITIAL_EXERCISES));
+      if (!isInitialized) {
+        setExercises(INITIAL_EXERCISES);
+        localStorage.setItem(STORAGE_KEYS.EXERCISES, JSON.stringify(INITIAL_EXERCISES));
+      } else {
+        setExercises([]);
+      }
     }
 
     // 4. Load/Seed Workout Plans
     const savedPlans = localStorage.getItem(STORAGE_KEYS.PLANS);
-    let loadedPlans: WorkoutPlan[] = [];
     if (savedPlans) {
-      loadedPlans = JSON.parse(savedPlans);
-      setPlans(loadedPlans);
+      setPlans(JSON.parse(savedPlans));
     } else {
-      // Seed initial demo plan for Mario Rossi
-      loadedPlans = DEMO_WORKOUT_PLANS;
-      setPlans(DEMO_WORKOUT_PLANS);
-      localStorage.setItem(STORAGE_KEYS.PLANS, JSON.stringify(DEMO_WORKOUT_PLANS));
+      if (!isInitialized) {
+        setPlans(DEMO_WORKOUT_PLANS);
+        localStorage.setItem(STORAGE_KEYS.PLANS, JSON.stringify(DEMO_WORKOUT_PLANS));
+      } else {
+        setPlans([]);
+      }
     }
 
     // 5. Load/Seed Workout Templates
@@ -140,8 +152,12 @@ export default function App() {
     if (savedTemplates) {
       setTemplates(JSON.parse(savedTemplates));
     } else {
-      setTemplates(DEMO_TEMPLATES);
-      localStorage.setItem(STORAGE_KEYS.TEMPLATES, JSON.stringify(DEMO_TEMPLATES));
+      if (!isInitialized) {
+        setTemplates(DEMO_TEMPLATES);
+        localStorage.setItem(STORAGE_KEYS.TEMPLATES, JSON.stringify(DEMO_TEMPLATES));
+      } else {
+        setTemplates([]);
+      }
     }
 
     // 6. Caricamento del Logbook
@@ -150,6 +166,10 @@ export default function App() {
       setLogbook(JSON.parse(savedLogbook));
     } else {
       setLogbook([]);
+    }
+
+    if (!isInitialized) {
+      localStorage.setItem('pt_archive_initialized', 'true');
     }
   }, []);
 

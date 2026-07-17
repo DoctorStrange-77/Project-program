@@ -176,26 +176,21 @@ export function runDataMigrations(): void {
 }
 
 // 3. Normalizzazione dei backup precedenti (es: type = "pt_coach_backup")
-export function normalizeBackup(data: any): { normalizedData: any; wasConverted: boolean; absentKeys: string[] } {
-  if (!data || typeof data !== 'object') {
-    return { normalizedData: data, wasConverted: false, absentKeys: [] };
-  }
-
-  // Collect absent keys FIRST from the raw input data
+export function normalizeBackup(data: any): { 
+  normalizedData: any; 
+  wasConverted: boolean; 
+  absentKeys: string[]; 
+  invalidKeys: string[]; 
+} {
   const absentKeys: string[] = [];
-  if (data.clients === undefined) absentKeys.push('clients');
-  if (data.exercises === undefined) absentKeys.push('exercises');
-  if (data.plans === undefined) absentKeys.push('plans');
-  if (data.templates === undefined) absentKeys.push('templates');
-  if (data.logbook === undefined) absentKeys.push('logbook');
-  if (data.coachConfig === undefined && data.config === undefined) absentKeys.push('coachConfig');
+  const invalidKeys: string[] = [];
+
+  if (!data || typeof data !== 'object') {
+    return { normalizedData: data, wasConverted: false, absentKeys: [], invalidKeys: ['root'] };
+  }
 
   // Verifica se è il vecchio formato
   const isOldFormat = data.type === 'pt_coach_backup' || (!data.appName && data.config);
-
-  if (!isOldFormat) {
-    return { normalizedData: data, wasConverted: false, absentKeys };
-  }
 
   const normalized: any = {
     appName: 'PT-Coach-App',
@@ -204,58 +199,57 @@ export function normalizeBackup(data: any): { normalizedData: any; wasConverted:
     exportedAt: data.timestamp || data.exportedAt || new Date().toISOString(),
   };
 
-  // 1. Configurazione: config -> coachConfig
-  if (data.coachConfig !== undefined || data.config !== undefined) {
-    let finalConfig: any = null;
-    const rawConfig = data.coachConfig !== undefined ? data.coachConfig : data.config;
-    if (rawConfig) {
-      if (typeof rawConfig === 'string') {
+  // 1. Array principali
+  const arrayKeys = ['clients', 'exercises', 'plans', 'templates', 'logbook'];
+  for (const key of arrayKeys) {
+    if (data[key] === undefined) {
+      absentKeys.push(key);
+    } else {
+      const val = data[key];
+      if (Array.isArray(val)) {
+        normalized[key] = val;
+      } else if (typeof val === 'string') {
         try {
-          finalConfig = JSON.parse(rawConfig);
+          const parsed = JSON.parse(val);
+          if (Array.isArray(parsed)) {
+            normalized[key] = parsed;
+          } else {
+            invalidKeys.push(key);
+          }
         } catch {
-          finalConfig = null;
-        }
-      } else if (typeof rawConfig === 'object') {
-        finalConfig = rawConfig;
-      }
-    }
-    
-    // Fallback se coachConfig è vuoto o non valido per non sovrascrivere con un oggetto vuoto
-    if (!finalConfig || typeof finalConfig !== 'object' || Array.isArray(finalConfig)) {
-      const currentConfigStr = localStorage.getItem('pt_coach_config');
-      if (currentConfigStr) {
-        try {
-          finalConfig = JSON.parse(currentConfigStr);
-        } catch {
-          finalConfig = { nomeProgramma: '', nomeCoach: '', primaryColor: '#CCFF00', isConfigured: false };
+          invalidKeys.push(key);
         }
       } else {
-        finalConfig = { nomeProgramma: '', nomeCoach: '', primaryColor: '#CCFF00', isConfigured: false };
+        invalidKeys.push(key);
       }
     }
-    normalized.coachConfig = finalConfig;
   }
 
-  // Helpers per normalizzazione array (gestione stringhe da localStorage nel vecchio formato)
-  const parseArray = (key: string): any[] => {
-    const val = data[key];
-    if (!val) return [];
-    if (typeof val === 'string') {
-      try {
-        const parsed = JSON.parse(val);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-    return Array.isArray(val) ? val : [];
-  };
+  // 2. Configurazione: coachConfig / config
+  const hasCoachConfig = data.coachConfig !== undefined;
+  const hasConfig = data.config !== undefined;
 
-  if (data.clients !== undefined) normalized.clients = parseArray('clients');
-  if (data.plans !== undefined) normalized.plans = parseArray('plans');
-  if (data.templates !== undefined) normalized.templates = parseArray('templates');
-  if (data.logbook !== undefined) normalized.logbook = parseArray('logbook');
-  if (data.exercises !== undefined) normalized.exercises = parseArray('exercises');
+  if (!hasCoachConfig && !hasConfig) {
+    absentKeys.push('coachConfig');
+  } else {
+    const rawConfig = hasCoachConfig ? data.coachConfig : data.config;
+    if (rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig)) {
+      normalized.coachConfig = rawConfig;
+    } else if (typeof rawConfig === 'string') {
+      try {
+        const parsed = JSON.parse(rawConfig);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          normalized.coachConfig = parsed;
+        } else {
+          invalidKeys.push('coachConfig');
+        }
+      } catch {
+        invalidKeys.push('coachConfig');
+      }
+    } else {
+      invalidKeys.push('coachConfig');
+    }
+  }
 
   // Altre chiavi facoltative
   if (data.analysisSettings) {
@@ -265,7 +259,12 @@ export function normalizeBackup(data: any): { normalizedData: any; wasConverted:
     normalized.otherPtKeys = data.otherPtKeys;
   }
 
-  return { normalizedData: normalized, wasConverted: true, absentKeys };
+  return { 
+    normalizedData: normalized, 
+    wasConverted: isOldFormat, 
+    absentKeys, 
+    invalidKeys 
+  };
 }
 
 // 4. Validazione della struttura di backup (Obbligatorietà di tutti i dati principali)
@@ -640,12 +639,27 @@ export async function mergeBackup(
 
 // 10. CANCELLAZIONE TOTALE DELLE CHIAVI DELL'APP (Con abilitazione Annulla ultimo ripristino)
 export function clearAppLocalStorage(): void {
-  // Crea un backup completo prima di svuotare
+  // 1. Crea pre-import backup di sicurezza
   createPreImportBackup();
 
-  // Preleva esclusivamente le chiavi appartenenti all'applicazione
+  // 2. Rimuovi le chiavi dell'app
   const appKeys = getAppKeys();
   appKeys.forEach(k => {
     localStorage.removeItem(k);
   });
+
+  // 3. Salva uno stato vuoto esplicito
+  localStorage.setItem('pt_clients', JSON.stringify([]));
+  localStorage.setItem('pt_plans', JSON.stringify([]));
+  localStorage.setItem('pt_templates', JSON.stringify([]));
+  localStorage.setItem('pt_exercises', JSON.stringify([]));
+  localStorage.setItem('pt_logbook', JSON.stringify([]));
+  localStorage.setItem('pt_coach_config', JSON.stringify({
+    nomeProgramma: '',
+    nomeCoach: '',
+    primaryColor: '#CCFF00',
+    isConfigured: false
+  }));
+  localStorage.setItem('pt_data_version', String(CURRENT_DATA_VERSION));
+  localStorage.setItem('pt_archive_initialized', 'true');
 }
