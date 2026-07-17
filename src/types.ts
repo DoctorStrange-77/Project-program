@@ -122,6 +122,23 @@ export interface WorkoutExerciseBlock {
   volumeMultiplier?: number; // volumeMultiplier facoltativo
 }
 
+export type ExerciseGroupType =
+  | 'superset'
+  | 'compound_set'
+  | 'triset'
+  | 'giant_set'
+  | 'jumpset'
+  | 'circuit';
+
+export const EXERCISE_GROUP_LABELS: Record<ExerciseGroupType, string> = {
+  superset: 'Superset',
+  compound_set: 'Compound Set',
+  triset: 'Triset',
+  giant_set: 'Giant Set',
+  jumpset: 'Jumpset',
+  circuit: 'Circuito',
+};
+
 export interface WorkoutExercise {
   id: string; // Unique instance ID in the workout plan
   exerciseId: string; // Reference to original exercise
@@ -144,8 +161,12 @@ export interface WorkoutExercise {
   modalitaConteggio?: 'entrambi_i_lati' | 'singolo_lato';
   
   groupId?: string;
-  groupType?: 'Superset' | 'Triset' | 'Giant set' | 'Jumpset' | 'Circuito';
+  groupType?: ExerciseGroupType;
   groupRest?: number; // common rest after group
+  groupOrder?: number;
+  groupRestBetweenExercisesSec?: number;
+  groupRestAfterRoundSec?: number;
+  groupRounds?: number;
   
   // Stable ID across weeks for the same logical row
   programRowId?: string;

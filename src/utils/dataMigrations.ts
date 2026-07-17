@@ -4,6 +4,7 @@
  */
 
 import { Client, WorkoutPlan, WorkoutTemplate, LogbookEntry, CoachConfig } from '../types';
+import './exerciseGroupUtils';
 
 export const CURRENT_DATA_VERSION = 2;
 
