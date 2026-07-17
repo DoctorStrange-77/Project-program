@@ -39,6 +39,29 @@ const DISTRICT_COLORS: { [key: string]: string } = {
   'Addome': '#6366f1',             // Indaco
 };
 
+const ensureUniqueProgramRowIds = (esercizi: WorkoutExercise[]): WorkoutExercise[] => {
+  const seenIds = new Set<string>();
+  return esercizi.map(ex => {
+    if (!ex.programRowId || seenIds.has(ex.programRowId)) {
+      const freshRowId = 'pr_' + Math.random().toString(36).substr(2, 5);
+      seenIds.add(freshRowId);
+      return { ...ex, programRowId: freshRowId };
+    }
+    seenIds.add(ex.programRowId);
+    return ex;
+  });
+};
+
+const fixDuplicateProgramRowIdsInWeeks = (prevWeeks: WorkoutWeek[]): WorkoutWeek[] => {
+  return prevWeeks.map(w => ({
+    ...w,
+    giornate: w.giornate.map(d => ({
+      ...d,
+      esercizi: ensureUniqueProgramRowIds(d.esercizi)
+    }))
+  }));
+};
+
 const migrateWeeks = (inputWeeks: WorkoutWeek[]): WorkoutWeek[] => {
   if (!inputWeeks || inputWeeks.length === 0) return inputWeeks;
   
@@ -920,7 +943,8 @@ export default function WorkoutWizard({
       recupero: exObj.recupero || 90,
       tut: exObj.tut || '3-0-1-0',
       tecnicaIntensita: exObj.tecnicaIntensita || 'Nessuna',
-      note: exObj.noteTecniche || ''
+      note: exObj.noteTecniche || '',
+      volumeMultiplier: 1
     };
     setActiveBlocks([initialBlock]);
   };
@@ -936,7 +960,8 @@ export default function WorkoutWizard({
       recupero: 90,
       tut: '3-0-1-0',
       tecnicaIntensita: 'Nessuna',
-      note: ''
+      note: '',
+      volumeMultiplier: 1
     };
     setActiveBlocks([initialBlock]);
   };
@@ -952,7 +977,8 @@ export default function WorkoutWizard({
       recupero: 90,
       tut: '3-0-1-0',
       tecnicaIntensita: 'Nessuna',
-      note: ''
+      note: '',
+      volumeMultiplier: 1
     };
     setActiveBlocks([...activeBlocks, newBlock]);
   };
@@ -1316,11 +1342,19 @@ export default function WorkoutWizard({
       return;
     }
 
+    const sourceDayIdx = sourceWeekObj?.giornate.findIndex(d => d.id === sourceDayId);
+    const isSameLogicalDay = sourceDayIdx === copyTargetDayIdx;
+
     // Clone exercises and regenerate instance IDs to keep them completely unique and isolated
-    const clonedExercises = sourceDayObj.esercizi.map(ex => ({
-      ...ex,
-      id: 'we_inst_copied_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)
-    }));
+    const clonedExercises = sourceDayObj.esercizi.map(ex => {
+      const newId = 'we_inst_copied_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+      const newRowId = isSameLogicalDay ? ex.programRowId : ('pr_' + Math.random().toString(36).substr(2, 5));
+      return {
+        ...ex,
+        id: newId,
+        programRowId: newRowId
+      };
+    });
 
     setWeeks(prevWeeks => prevWeeks.map(w => {
       if (w.weekIndex === copyTargetWeek) {
@@ -1330,6 +1364,7 @@ export default function WorkoutWizard({
             if (idx === copyTargetDayIdx) {
               return {
                 ...d,
+                programDayId: isSameLogicalDay ? sourceDayObj.programDayId : d.programDayId,
                 esercizi: [...d.esercizi, ...clonedExercises]
               };
             }
@@ -1565,8 +1600,10 @@ export default function WorkoutWizard({
       return;
     }
 
+    const sanitizedWeeks = fixDuplicateProgramRowIdsInWeeks(weeks);
+
     // Default legacy support (giornate points to week 1 layout)
-    const week1Giornate = weeks.find(w => w.weekIndex === 1)?.giornate || giornate;
+    const week1Giornate = sanitizedWeeks.find(w => w.weekIndex === 1)?.giornate || giornate;
 
     if (isTemplateMode) {
       const templateToSave: WorkoutTemplate = {
@@ -1578,7 +1615,7 @@ export default function WorkoutWizard({
         durataSettimane: planDurata,
         noteGenerali: planNoteGenerali.trim(),
         giornate: week1Giornate,
-        weeks: weeks
+        weeks: sanitizedWeeks
       };
       if (onSaveTemplate) {
         onSaveTemplate(templateToSave);
@@ -1601,7 +1638,7 @@ export default function WorkoutWizard({
         giornate: week1Giornate,
         dataCreazione: editingPlan ? editingPlan.dataCreazione : new Date().toISOString().split('T')[0],
         status: planStatus,
-        weeks: weeks
+        weeks: sanitizedWeeks
       };
       onSavePlan(newPlan);
     }
@@ -1617,7 +1654,8 @@ export default function WorkoutWizard({
     const templateName = window.prompt("Salva modello con questo nome:", planNome);
     if (!templateName) return;
 
-    const week1Giornate = weeks.find(w => w.weekIndex === 1)?.giornate || giornate;
+    const sanitizedWeeks = fixDuplicateProgramRowIdsInWeeks(weeks);
+    const week1Giornate = sanitizedWeeks.find(w => w.weekIndex === 1)?.giornate || giornate;
 
     const newTemplate: WorkoutTemplate = {
       id: 'template_' + Date.now(),
@@ -1628,7 +1666,7 @@ export default function WorkoutWizard({
       durataSettimane: planDurata,
       noteGenerali: planNoteGenerali.trim(),
       giornate: week1Giornate,
-      weeks: weeks
+      weeks: sanitizedWeeks
     };
 
     const updatedTemplates = [...templates, newTemplate];
@@ -2780,8 +2818,12 @@ export default function WorkoutWizard({
                             {weeks.map((w) => {
                               const isSelected = w.weekIndex === activeWeekIndex;
                               const targetWeekObj = weeks.find(wk => wk.weekIndex === w.weekIndex);
-                              const targetDayObj = targetWeekObj?.giornate.find(d => d.programDayId === day.programDayId) || targetWeekObj?.giornate[dIdx];
-                              const targetEx = targetDayObj?.esercizi.find(e => e.programRowId === ex.programRowId) || (exIdx !== undefined ? targetDayObj?.esercizi[exIdx] : undefined);
+                              const targetDayObj = day.programDayId 
+                                ? targetWeekObj?.giornate.find(d => d.programDayId === day.programDayId)
+                                : targetWeekObj?.giornate[dIdx];
+                              const targetEx = ex.programRowId
+                                ? targetDayObj?.esercizi.find(e => e.programRowId === ex.programRowId)
+                                : (exIdx !== undefined ? targetDayObj?.esercizi[exIdx] : undefined);
 
                               const bgStyle = isSelected 
                                 ? { backgroundColor: `${config.primaryColor}06` } 
@@ -3322,24 +3364,62 @@ export default function WorkoutWizard({
                       <p className="text-[11px] text-white/30 italic">Nessun esercizio pianificato.</p>
                     ) : (
                       <div className="divide-y divide-white/5 space-y-2">
-                        {day.esercizi.map((ex, exIdx) => (
-                          <div key={ex.id} className="pt-2 first:pt-0 flex justify-between items-start text-left">
-                            <div className="space-y-0.5">
-                              <p className="font-bold text-white text-[12px]">{exIdx + 1}. {ex.nome} {ex.groupId ? <span className="text-[9px] uppercase font-black text-[#CCFF00] ml-1">({ex.groupType})</span> : ''}</p>
-                              <p className="text-[11px] text-white/50 leading-relaxed">
-                                {ex.serie} serie x {ex.repMin}-{ex.repMax} rep • RIR {ex.rir} • Rec. {ex.recupero}s 
-                                {ex.tecnicaIntensita && ex.tecnicaIntensita !== 'Nessuna' ? ` • ${ex.tecnicaIntensita}` : ''}
-                                {ex.caricoPrevisto ? ` • Carico: ${ex.caricoPrevisto}` : ''}
-                              </p>
-                              {ex.noteTecniche.trim() && (
-                                <p className="text-[10px] text-white/30 italic mt-0.5">💡 {ex.noteTecniche}</p>
-                              )}
+                        {day.esercizi.map((ex, exIdx) => {
+                          const hasBlocks = ex.blocks && ex.blocks.length > 0;
+                          return (
+                            <div key={ex.id} className="pt-2 first:pt-0 flex justify-between items-start text-left">
+                              <div className="space-y-1.5 flex-1 pr-4">
+                                <p className="font-bold text-white text-[12px]">
+                                  {exIdx + 1}. {ex.nome} 
+                                  {ex.groupId ? <span className="text-[9px] uppercase font-black text-[#CCFF00] ml-1">({ex.groupType})</span> : ''}
+                                  {hasBlocks ? (
+                                    <span className="text-[10px] text-white/45 ml-2 font-semibold">
+                                      (Totale: {ex.serie} serie in {ex.blocks!.length} blocchi)
+                                    </span>
+                                  ) : ''}
+                                </p>
+                                
+                                {hasBlocks ? (
+                                  <div className="space-y-1.5 pl-3 border-l border-white/10 mt-1">
+                                    {ex.blocks!.map((b, bIdx) => (
+                                      <div key={b.id || bIdx} className="text-[11px] text-white/50 leading-relaxed bg-white/5 p-1.5 rounded-lg border border-white/5">
+                                        <div className="flex items-center justify-between">
+                                          <span className="font-bold text-white/80">{b.nome}</span>
+                                          {b.tecnicaIntensita && b.tecnicaIntensita !== 'Nessuna' ? (
+                                            <span className="text-[9px] uppercase font-black px-1.5 py-0.5 rounded bg-[#CCFF00]/10 text-[#CCFF00]" style={{ color: config.primaryColor, backgroundColor: `${config.primaryColor}15` }}>
+                                              {b.tecnicaIntensita}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                        <p className="mt-0.5 text-white/60">
+                                          {b.serie} {b.serie === 1 ? 'serie' : 'serie'} x {b.repMin}-{b.repMax} rep • RIR {b.rir} • Rec. {b.recupero}s
+                                          {b.caricoPrevisto ? ` • Carico: ${b.caricoPrevisto}` : ''}
+                                          {b.volumeMultiplier !== undefined && b.volumeMultiplier !== 1 ? ` • Molt. Vol: x${b.volumeMultiplier}` : ''}
+                                        </p>
+                                        {b.note?.trim() && (
+                                          <p className="text-[10px] text-white/35 italic mt-0.5">📝 {b.note}</p>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="text-[11px] text-white/50 leading-relaxed">
+                                    {ex.serie} serie x {ex.repMin}-{ex.repMax} rep • RIR {ex.rir} • Rec. {ex.recupero}s 
+                                    {ex.tecnicaIntensita && ex.tecnicaIntensita !== 'Nessuna' ? ` • ${ex.tecnicaIntensita}` : ''}
+                                    {ex.caricoPrevisto ? ` • Carico: ${ex.caricoPrevisto}` : ''}
+                                  </p>
+                                )}
+                                
+                                {ex.noteTecniche && ex.noteTecniche.trim() && (
+                                  <p className="text-[10px] text-white/30 italic mt-0.5">💡 {ex.noteTecniche}</p>
+                                )}
+                              </div>
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-black/60 border border-white/5 text-white/40 shrink-0 text-center">
+                                {ex.distrettoMuscolare}
+                              </span>
                             </div>
-                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-black/60 border border-white/5 text-white/40">
-                              {ex.distrettoMuscolare}
-                            </span>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -3792,7 +3872,7 @@ export default function WorkoutWizard({
                         </div>
 
                         {/* Tecnica di intensita */}
-                        <div className="space-y-1 col-span-2">
+                        <div className="space-y-1 col-span-1">
                           <label className="block text-[9px] uppercase font-bold text-white/40">Tecnica di Intensità</label>
                           <select
                             value={b.tecnicaIntensita || 'Nessuna'}
@@ -3807,6 +3887,19 @@ export default function WorkoutWizard({
                             <option value="Myo-reps">Myo-reps</option>
                             <option value="Cluster set">Cluster set</option>
                           </select>
+                        </div>
+
+                        {/* Volume Multiplier */}
+                        <div className="space-y-1 col-span-1">
+                          <label className="block text-[9px] uppercase font-bold text-[#CCFF00]" style={{ color: config.primaryColor }}>Vol. Multiplier</label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0"
+                            value={b.volumeMultiplier !== undefined ? b.volumeMultiplier : 1}
+                            onChange={(e) => handleUpdateBlockField(b.id, 'volumeMultiplier', parseFloat(e.target.value) || 1)}
+                            className="w-full px-2 py-1.5 rounded-lg bg-black/40 border border-white/5 text-xs text-white font-mono focus:outline-none"
+                          />
                         </div>
                       </div>
 

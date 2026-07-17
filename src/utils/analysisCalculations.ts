@@ -30,9 +30,13 @@ export function parseTUT(tut?: string): number {
 export function getDatabaseExercises(): Exercise[] {
   if (typeof window !== 'undefined') {
     try {
-      const saved = localStorage.getItem('coach_exercises');
-      if (saved) {
-        return JSON.parse(saved) as Exercise[];
+      const savedPt = localStorage.getItem('pt_exercises');
+      if (savedPt) {
+        return JSON.parse(savedPt) as Exercise[];
+      }
+      const savedCoach = localStorage.getItem('coach_exercises');
+      if (savedCoach) {
+        return JSON.parse(savedCoach) as Exercise[];
       }
     } catch (e) {
       // ignore
@@ -88,6 +92,50 @@ export function resolveWorkoutExerciseData(
     distrettiSecondari,
     modalitaConteggio
   };
+}
+
+// Order of search: exerciseId -> programRowId -> same-week exercise -> normalized name
+export function findMatchingWorkoutExercise(
+  l: LogbookEntry,
+  plan: WorkoutPlan,
+  calculatedWeek: number
+): WorkoutExercise | undefined {
+  const weekObj = plan.weeks?.find(w => w.weekIndex === calculatedWeek);
+  const weekExercises = weekObj ? weekObj.giornate.flatMap(g => g.esercizi) : [];
+  const allPlanExercises = plan.weeks 
+    ? plan.weeks.flatMap(w => w.giornate.flatMap(g => g.esercizi))
+    : plan.giornate.flatMap(g => g.esercizi);
+
+  // 1. exerciseId
+  if (l.exerciseId) {
+    const matchInWeek = weekExercises.find(e => e.exerciseId === l.exerciseId);
+    if (matchInWeek) return matchInWeek;
+    const matchGlobal = allPlanExercises.find(e => e.exerciseId === l.exerciseId);
+    if (matchGlobal) return matchGlobal;
+  }
+
+  // 2. programRowId
+  if (l.programRowId) {
+    const matchInWeek = weekExercises.find(e => e.programRowId === l.programRowId);
+    if (matchInWeek) return matchInWeek;
+    const matchGlobal = allPlanExercises.find(e => e.programRowId === l.programRowId);
+    if (matchGlobal) return matchGlobal;
+  }
+
+  // 3. Same-week exercise (by exerciseId or name)
+  if (weekExercises.length > 0) {
+    if (l.exerciseId) {
+      const matchInWeek = weekExercises.find(e => e.exerciseId === l.exerciseId);
+      if (matchInWeek) return matchInWeek;
+    }
+    const matchByNameInWeek = weekExercises.find(e => e.nome.trim().toLowerCase() === l.exerciseNome.trim().toLowerCase());
+    if (matchByNameInWeek) return matchByNameInWeek;
+  }
+
+  // 4. Normalized name (across entire plan)
+  const normName = l.exerciseNome.trim().toLowerCase();
+  const matchByNameGlobal = allPlanExercises.find(e => e.nome.trim().toLowerCase() === normName);
+  return matchByNameGlobal;
 }
 
 export interface SetInfo {
@@ -755,7 +803,7 @@ export function runFullAnalysis(
     }
 
     // Secondary muscles lookup
-    const matchedEx = planInScope!.giornate.flatMap(g => g.esercizi).find(e => e.nome.toLowerCase() === l.exerciseNome.toLowerCase());
+    const matchedEx = findMatchingWorkoutExercise(l, planInScope!, calculatedWeek);
     const resolved = matchedEx ? resolveWorkoutExerciseData(matchedEx, dbExercises) : {
       distrettoMuscolare: 'Pettorali' as DistrettoMuscolare,
       distrettiSecondari: getFallbackSecondaries(l.exerciseNome, 'Pettorali'),
@@ -858,9 +906,13 @@ export function runFullAnalysis(
     const dailyLogs = logsByDate[date];
     const resolvedExs: WorkoutExercise[] = [];
     dailyLogs.forEach(l => {
-      const matchedEx = planInScope!.giornate
-        .flatMap(g => g.esercizi)
-        .find(e => e.nome.toLowerCase() === l.exerciseNome.toLowerCase());
+      const planStart = new Date(planInScope!.dataInizio || '2026-06-01');
+      const logDate = new Date(l.data);
+      const diffTime = Math.abs(logDate.getTime() - planStart.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      const calculatedWeek = Math.max(1, Math.ceil(diffDays / 7));
+
+      const matchedEx = findMatchingWorkoutExercise(l, planInScope!, calculatedWeek);
       if (matchedEx) {
         const logSetsCount = l.sets.length;
         const tempEx: WorkoutExercise = {
@@ -944,7 +996,13 @@ export function runFullAnalysis(
 
     // Executed matching
     logEntries.forEach(l => {
-      const matchedEx = planInScope!.giornate.flatMap(g => g.esercizi).find(e => e.nome.toLowerCase() === l.exerciseNome.toLowerCase());
+      const planStart = new Date(planInScope!.dataInizio || '2026-06-01');
+      const logDate = new Date(l.data);
+      const diffTime = Math.abs(logDate.getTime() - planStart.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      const calculatedWeek = Math.max(1, Math.ceil(diffDays / 7));
+
+      const matchedEx = findMatchingWorkoutExercise(l, planInScope!, calculatedWeek);
       const resolved = matchedEx ? resolveWorkoutExerciseData(matchedEx, dbExercises) : {
         distrettoMuscolare: 'Pettorali' as DistrettoMuscolare,
         distrettiSecondari: getFallbackSecondaries(l.exerciseNome, 'Pettorali'),

@@ -230,7 +230,8 @@ export default function LogbookTracker({ client, config, onShowToast }: LogbookT
         exerciseId: ex.id,
         exerciseNome: ex.nome,
         sets,
-        note: ex.notes.trim() || undefined
+        note: ex.notes.trim() || undefined,
+        programRowId: ex.targetEx?.programRowId
       };
     });
 

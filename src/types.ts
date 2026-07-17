@@ -214,4 +214,5 @@ export interface LogbookEntry {
   exerciseNome: string;
   sets: LogbookSet[];
   note?: string;
+  programRowId?: string;
 }
