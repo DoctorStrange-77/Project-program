@@ -11,11 +11,15 @@ import {
 import { 
   CURRENT_DATA_VERSION, 
   validateBackup, 
+  normalizeBackup,
   exportBackup, 
-  createPreImportBackup, 
-  restorePreImportBackup, 
-  mergeItems 
+  replaceBackup,
+  mergeBackup,
+  restorePreImportBackup,
+  clearAppLocalStorage
 } from '../utils/dataMigrations';
+import { DEMO_CLIENTS, DEMO_WORKOUT_PLANS, DEMO_TEMPLATES } from '../data/demoData';
+import { INITIAL_EXERCISES } from '../data/exercises';
 
 interface BackupManagerProps {
   config: CoachConfig;
@@ -58,6 +62,7 @@ export default function BackupManager({
   onShowConfirm
 }: BackupManagerProps) {
   const [importedBackupData, setImportedBackupData] = useState<any | null>(null);
+  const [backupWasConverted, setBackupWasConverted] = useState(false);
   const [hasPreImportBackup, setHasPreImportBackup] = useState(false);
   const [confirmClearStep, setConfirmClearStep] = useState(0); // 0 = default, 1 = first warning, 2 = final double warning
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -107,18 +112,27 @@ export default function BackupManager({
 
         const parsedData = JSON.parse(fileContent);
 
-        // Validazione della struttura
-        const validation = validateBackup(parsedData);
+        // 1. Normalizzazione se formato precedente
+        const { normalizedData, wasConverted } = normalizeBackup(parsedData);
+
+        // 2. Validazione della struttura normalizzata
+        const validation = validateBackup(normalizedData);
         if (!validation.isValid) {
           throw new Error(validation.error || 'Struttura di backup non valida.');
         }
 
-        // Se valido, mostriamo l'anteprima/riassunto prima di procedere
-        setImportedBackupData(parsedData);
-        onShowToast('Backup letto con successo! Verifica il riepilogo prima di procedere.', 'info');
+        // Mostriamo l'anteprima/riassunto prima di procedere
+        setImportedBackupData(normalizedData);
+        setBackupWasConverted(wasConverted);
+        if (wasConverted) {
+          onShowToast('Backup in formato precedente letto e convertito con successo! Verifica il riepilogo.', 'warning');
+        } else {
+          onShowToast('Backup letto con successo! Verifica il riepilogo prima di procedere.', 'info');
+        }
       } catch (err: any) {
         onShowToast(`Errore di validazione: ${err.message || 'File non valido.'}`, 'error');
         setImportedBackupData(null);
+        setBackupWasConverted(false);
         if (fileInputRef.current) fileInputRef.current.value = '';
       }
     };
@@ -134,39 +148,11 @@ export default function BackupManager({
       cancelText: 'Annulla',
       isDestructive: true,
       onConfirm: () => {
-        try {
-          // 1. Snapshot dello stato corrente (per rollback e undo)
-          createPreImportBackup();
+        const result = replaceBackup(data);
+        if (result.success) {
           setHasPreImportBackup(true);
 
-          // 2. Aggiorna localStorage
-          // Per garantire atomicità, eseguiamo le scritture in un try interno. Se fallisce, facciamo il rollback.
-          try {
-            localStorage.setItem('pt_clients', JSON.stringify(data.clients || []));
-            localStorage.setItem('pt_plans', JSON.stringify(data.plans || []));
-            localStorage.setItem('pt_templates', JSON.stringify(data.templates || []));
-            localStorage.setItem('pt_exercises', JSON.stringify(data.exercises || []));
-            localStorage.setItem('pt_logbook', JSON.stringify(data.logbook || []));
-            localStorage.setItem('pt_coach_config', JSON.stringify(data.coachConfig || {}));
-            localStorage.setItem('pt_data_version', String(data.dataVersion || CURRENT_DATA_VERSION));
-
-            if (data.analysisSettings) {
-              Object.entries(data.analysisSettings).forEach(([key, val]) => {
-                localStorage.setItem(key, val as string);
-              });
-            }
-            if (data.otherPtKeys) {
-              Object.entries(data.otherPtKeys).forEach(([key, val]) => {
-                localStorage.setItem(key, val as string);
-              });
-            }
-          } catch (storageError: any) {
-            // Rollback immediato
-            restorePreImportBackup();
-            throw new Error(`Spazio di archiviazione insufficiente (localStorage pieno) o errore di scrittura: ${storageError.message || storageError}`);
-          }
-
-          // 3. Aggiorna gli stati React in memoria del parent (solo se la scrittura su disco è completata con successo)
+          // Aggiorna gli stati React in memoria del parent
           onUpdateClients(data.clients || []);
           onUpdatePlans(data.plans || []);
           onUpdateTemplates(data.templates || []);
@@ -176,11 +162,12 @@ export default function BackupManager({
 
           // Reset stato importazione
           setImportedBackupData(null);
+          setBackupWasConverted(false);
           if (fileInputRef.current) fileInputRef.current.value = '';
 
           onShowToast('Database interamente ripristinato dal file di backup!', 'success');
-        } catch (error: any) {
-          onShowToast(error.message || 'Errore imprevisto durante il ripristino.', 'error');
+        } else {
+          onShowToast(result.error || 'Errore imprevisto durante il ripristino.', 'error');
         }
       }
     });
@@ -188,73 +175,50 @@ export default function BackupManager({
 
   // 4. Modalità Unisci con i Dati Esistenti
   const handleMergeData = async (data: any) => {
-    try {
-      // 1. Snapshot dello stato corrente
-      createPreImportBackup();
+    // Risoluzione dei conflitti interattiva
+    const askConflict = async (itemType: string, currentItem: any, importedItem: any): Promise<'current' | 'imported'> => {
+      const name = currentItem.nome || currentItem.nomeCompleto || currentItem.nomeProgramma || currentItem.exerciseNome || `ID: ${currentItem.id}`;
+      const labelType = itemType === 'clients' ? 'Atleta' :
+                        itemType === 'exercises' ? 'Esercizio' :
+                        itemType === 'plans' ? 'Scheda' :
+                        itemType === 'templates' ? 'Modello' :
+                        itemType === 'logbook' ? 'Rilevazione logbook' : 'Elemento';
+      
+      const proceed = window.confirm(
+        `Conflitto rilevato per "${labelType}": "${name}".\n\nDesideri sovrascrivere l'elemento sul dispositivo con quello importato dal backup?\n\n[OK = Importa dal backup, ANNULLA = Conserva attuale]`
+      );
+      return proceed ? 'imported' : 'current';
+    };
+
+    const result = await mergeBackup(
+      data,
+      clients,
+      exercises,
+      plans,
+      templates,
+      logbook,
+      config,
+      askConflict
+    );
+
+    if (result.success) {
       setHasPreImportBackup(true);
 
-      // Risoluzione dei conflitti interattiva
-      const askConflict = async (itemType: string, currentItem: any, importedItem: any): Promise<'current' | 'imported'> => {
-        const name = currentItem.nome || currentItem.nomeCompleto || currentItem.nomeProgramma || currentItem.exerciseNome || `ID: ${currentItem.id}`;
-        const labelType = itemType === 'clients' ? 'Atleta' :
-                          itemType === 'exercises' ? 'Esercizio' :
-                          itemType === 'plans' ? 'Scheda' :
-                          itemType === 'templates' ? 'Modello' :
-                          itemType === 'logbook' ? 'Rilevazione logbook' : 'Elemento';
-        
-        const proceed = window.confirm(
-          `Conflitto rilevato per "${labelType}": "${name}".\n\nDesideri sovrascrivere l'elemento sul dispositivo con quello importato dal backup?\n\n[OK = Importa dal backup, ANNULLA = Conserva attuale]`
-        );
-        return proceed ? 'imported' : 'current';
-      };
-
-      // 2. Unisci gli array principali
-      const mergedClients = await mergeItems(clients, data.clients || [], askConflict, 'clients');
-      const mergedExercises = await mergeItems(exercises, data.exercises || [], askConflict, 'exercises');
-      const mergedPlans = await mergeItems(plans, data.plans || [], askConflict, 'plans');
-      const mergedTemplates = await mergeItems(templates, data.templates || [], askConflict, 'templates');
-      const mergedLogbook = await mergeItems(logbook, data.logbook || [], askConflict, 'logbook');
-      
-      const mergedConfig = { ...config, ...(data.coachConfig || {}) };
-
-      // 3. Scrivi in localStorage con protezione rollback
-      try {
-        localStorage.setItem('pt_clients', JSON.stringify(mergedClients));
-        localStorage.setItem('pt_plans', JSON.stringify(mergedPlans));
-        localStorage.setItem('pt_templates', JSON.stringify(mergedTemplates));
-        localStorage.setItem('pt_exercises', JSON.stringify(mergedExercises));
-        localStorage.setItem('pt_logbook', JSON.stringify(mergedLogbook));
-        localStorage.setItem('pt_coach_config', JSON.stringify(mergedConfig));
-        
-        if (data.analysisSettings) {
-          Object.entries(data.analysisSettings).forEach(([key, val]) => {
-            localStorage.setItem(key, val as string);
-          });
-        }
-        if (data.otherPtKeys) {
-          Object.entries(data.otherPtKeys).forEach(([key, val]) => {
-            localStorage.setItem(key, val as string);
-          });
-        }
-      } catch (storageError: any) {
-        restorePreImportBackup();
-        throw new Error(`localStorage pieno o errore di scrittura durante l'unione: ${storageError.message || storageError}`);
-      }
-
-      // 4. Aggiorna stati React
-      onUpdateClients(mergedClients);
-      onUpdateExercises(mergedExercises);
-      onUpdatePlans(mergedPlans);
-      onUpdateTemplates(mergedTemplates);
-      onUpdateLogbook(mergedLogbook);
-      onUpdateConfig(mergedConfig);
+      // Aggiorna stati React
+      onUpdateClients(result.mergedClients || []);
+      onUpdateExercises(result.mergedExercises || []);
+      onUpdatePlans(result.mergedPlans || []);
+      onUpdateTemplates(result.mergedTemplates || []);
+      onUpdateLogbook(result.mergedLogbook || []);
+      onUpdateConfig(result.mergedConfig || config);
 
       setImportedBackupData(null);
+      setBackupWasConverted(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
 
       onShowToast('Dati uniti con successo! Eventuali conflitti sono stati risolti.', 'success');
-    } catch (error: any) {
-      onShowToast(error.message || 'Errore durante l\'unione dei dati.', 'error');
+    } else {
+      onShowToast(result.error || 'Errore durante l\'unione dei dati.', 'error');
     }
   };
 
@@ -269,7 +233,6 @@ export default function BackupManager({
       onConfirm: () => {
         const success = restorePreImportBackup();
         if (success) {
-          localStorage.removeItem('pt_pre_import_backup');
           setHasPreImportBackup(false);
 
           // Ricarica gli stati in React leggendoli dal localStorage appena ripristinato
@@ -304,25 +267,39 @@ export default function BackupManager({
       isDestructive: true,
       onConfirm: () => {
         try {
-          createPreImportBackup();
-          setHasPreImportBackup(true);
+          const demoBackupData = {
+            appName: 'PT-Coach-App',
+            backupVersion: 1,
+            dataVersion: CURRENT_DATA_VERSION,
+            exportedAt: new Date().toISOString(),
+            coachConfig: {
+              nomeProgramma: 'Coach Board',
+              nomeCoach: 'Alessandro',
+              primaryColor: '#CCFF00',
+              isConfigured: true
+            },
+            clients: DEMO_CLIENTS,
+            exercises: INITIAL_EXERCISES,
+            plans: DEMO_WORKOUT_PLANS,
+            templates: DEMO_TEMPLATES,
+            logbook: []
+          };
 
-          const { DEMO_CLIENTS, DEMO_WORKOUT_PLANS, DEMO_TEMPLATES } = require('../data/demoData');
-          const { INITIAL_EXERCISES } = require('../data/exercises');
+          const result = replaceBackup(demoBackupData);
+          if (result.success) {
+            setHasPreImportBackup(true);
 
-          localStorage.setItem('pt_clients', JSON.stringify(DEMO_CLIENTS));
-          localStorage.setItem('pt_plans', JSON.stringify(DEMO_WORKOUT_PLANS));
-          localStorage.setItem('pt_templates', JSON.stringify(DEMO_TEMPLATES));
-          localStorage.setItem('pt_exercises', JSON.stringify(INITIAL_EXERCISES));
-          localStorage.removeItem('pt_logbook');
+            onUpdateClients(DEMO_CLIENTS);
+            onUpdatePlans(DEMO_WORKOUT_PLANS);
+            onUpdateTemplates(DEMO_TEMPLATES);
+            onUpdateExercises(INITIAL_EXERCISES);
+            onUpdateLogbook([]);
+            onUpdateConfig(demoBackupData.coachConfig);
 
-          onUpdateClients(DEMO_CLIENTS);
-          onUpdatePlans(DEMO_WORKOUT_PLANS);
-          onUpdateTemplates(DEMO_TEMPLATES);
-          onUpdateExercises(INITIAL_EXERCISES);
-          onUpdateLogbook([]);
-
-          onShowToast('Dati dimostrativi ripristinati correttamente!', 'success');
+            onShowToast('Dati dimostrativi ripristinati correttamente!', 'success');
+          } else {
+            onShowToast(result.error || 'Errore durante il ripristino dei dati demo.', 'error');
+          }
         } catch (err: any) {
           onShowToast(`Errore durante il ripristino dei dati demo: ${err.message}`, 'error');
         }
@@ -333,10 +310,27 @@ export default function BackupManager({
   // 7. Cancellazione Totale
   const executeFullDelete = () => {
     try {
-      createPreImportBackup();
+      // 1. Snapshot dello stato corrente per consentire Rollback
+      const demoBackupData = {
+        appName: 'PT-Coach-App',
+        backupVersion: 1,
+        dataVersion: CURRENT_DATA_VERSION,
+        exportedAt: new Date().toISOString(),
+        coachConfig: config,
+        clients,
+        exercises,
+        plans,
+        templates,
+        logbook
+      };
+      // Effettua la copia in pre-import backup prima del wipe
+      localStorage.setItem('pt_pre_import_backup', JSON.stringify(demoBackupData));
       setHasPreImportBackup(true);
 
-      localStorage.clear();
+      // 2. Svuota solo i dati specifici dell'app
+      clearAppLocalStorage();
+
+      // 3. Resetta gli stati in memoria
       onUpdateClients([]);
       onUpdatePlans([]);
       onUpdateTemplates([]);
@@ -349,12 +343,10 @@ export default function BackupManager({
         isConfigured: false
       });
 
-      onShowToast('Archivio interamente ripulito. Verrà eseguito il riavvio...', 'success');
-      setTimeout(() => {
-        window.location.reload();
-      }, 1000);
+      onShowToast('Archivio dell\'app svuotato con successo! È possibile annullare l\'operazione tramite il pulsante di ripristino.', 'success');
+      setConfirmClearStep(0);
     } catch (err: any) {
-      onShowToast(`Errore durante la pulizia totale: ${err.message}`, 'error');
+      onShowToast(`Errore durante lo svuotamento dell'archivio: ${err.message}`, 'error');
     }
   };
 
@@ -468,6 +460,7 @@ export default function BackupManager({
             <button 
               onClick={() => {
                 setImportedBackupData(null);
+                setBackupWasConverted(false);
                 if (fileInputRef.current) fileInputRef.current.value = '';
               }}
               className="p-1 hover:bg-white/5 rounded text-white/60 hover:text-white"
@@ -475,6 +468,13 @@ export default function BackupManager({
               <X className="w-4 h-4" />
             </button>
           </div>
+
+          {backupWasConverted && (
+            <div className="bg-amber-950/20 border border-amber-900/40 p-3 rounded-xl flex items-center gap-2 text-amber-300 text-[11px] font-bold">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>Nota: Questo file utilizza un formato di backup precedente (pt_coach_backup). È stato convertito e normalizzato automaticamente nel nuovo formato standard.</span>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 py-1">
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">

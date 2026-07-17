@@ -144,85 +144,12 @@ export default function App() {
       localStorage.setItem(STORAGE_KEYS.TEMPLATES, JSON.stringify(DEMO_TEMPLATES));
     }
 
-    // 6. Migrazione dei vecchi logbook senza planId
+    // 6. Caricamento del Logbook
     const savedLogbook = localStorage.getItem('pt_logbook');
     if (savedLogbook) {
-      const allLogs: LogbookEntry[] = JSON.parse(savedLogbook);
-      const needsMigration = allLogs.some(l => !l.planId);
-      if (needsMigration) {
-        const updatedLogs = allLogs.map(l => {
-          if (l.planId) return l;
-
-          const clientPlans = loadedPlans.filter(p => p.clienteId === l.clienteId);
-          if (clientPlans.length === 0) return l;
-
-          // Build candidate plans that match each criterion
-          // 2. programRowId
-          if (l.programRowId) {
-            const matchingPlans = clientPlans.filter(p => {
-              let hasRow = false;
-              const checkEx = (ex: any) => { if (ex.programRowId === l.programRowId) hasRow = true; };
-              if (p.giornate) p.giornate.forEach(d => d.esercizi?.forEach(checkEx));
-              if (p.weeks) p.weeks.forEach(wk => wk.giornate?.forEach(d => d.esercizi?.forEach(checkEx)));
-              return hasRow;
-            });
-            if (matchingPlans.length === 1) {
-              return { ...l, planId: matchingPlans[0].id };
-            }
-          }
-
-          // 4. programDayId
-          if (l.programDayId) {
-            const matchingPlans = clientPlans.filter(p => {
-              let hasDay = false;
-              if (p.giornate) p.giornate.forEach(d => { if (d.programDayId === l.programDayId) hasDay = true; });
-              if (p.weeks) p.weeks.forEach(wk => wk.giornate?.forEach(d => { if (d.programDayId === l.programDayId) hasDay = true; }));
-              return hasDay;
-            });
-            if (matchingPlans.length === 1) {
-              return { ...l, planId: matchingPlans[0].id };
-            }
-          }
-
-          // 5. exerciseId, weekIndex e giornata
-          if (l.exerciseId && l.weekIndex !== undefined && l.giornataNome) {
-            const matchingPlans = clientPlans.filter(p => {
-              let hasMatch = false;
-              const checkEx = (ex: any, week: number, dayNome: string) => {
-                if (ex.exerciseId === l.exerciseId && week === l.weekIndex && dayNome.toLowerCase() === l.giornataNome.toLowerCase()) {
-                  hasMatch = true;
-                }
-              };
-              if (p.giornate) p.giornate.forEach(d => d.esercizi?.forEach(ex => checkEx(ex, 1, d.nome)));
-              if (p.weeks) p.weeks.forEach(wk => wk.giornate?.forEach(d => d.esercizi?.forEach(ex => checkEx(ex, wk.weekIndex, d.nome))));
-              return hasMatch;
-            });
-            if (matchingPlans.length === 1) {
-              return { ...l, planId: matchingPlans[0].id };
-            }
-          }
-
-          // 6. nome normalizzato
-          if (l.exerciseNome) {
-            const normName = l.exerciseNome.trim().toLowerCase();
-            const matchingPlans = clientPlans.filter(p => {
-              let hasName = false;
-              const checkEx = (ex: any) => { if (ex.nome && ex.nome.trim().toLowerCase() === normName) hasName = true; };
-              if (p.giornate) p.giornate.forEach(d => d.esercizi?.forEach(checkEx));
-              if (p.weeks) p.weeks.forEach(wk => wk.giornate?.forEach(d => d.esercizi?.forEach(checkEx)));
-              return hasName;
-            });
-            if (matchingPlans.length === 1) {
-              return { ...l, planId: matchingPlans[0].id };
-            }
-          }
-
-          return l;
-        });
-
-        localStorage.setItem('pt_logbook', JSON.stringify(updatedLogs));
-        setLogbook(updatedLogs);
-      }
+      setLogbook(JSON.parse(savedLogbook));
+    } else {
+      setLogbook([]);
     }
   }, []);
 
@@ -503,6 +430,7 @@ export default function App() {
         const allLogs: LogbookEntry[] = JSON.parse(storedLogs);
         const filteredLogs = allLogs.filter(l => l.planId !== id);
         localStorage.setItem('pt_logbook', JSON.stringify(filteredLogs));
+        setLogbook(filteredLogs);
       }
     }
 
