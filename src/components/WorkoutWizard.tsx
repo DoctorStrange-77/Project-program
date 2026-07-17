@@ -1342,8 +1342,14 @@ export default function WorkoutWizard({
       return;
     }
 
-    const sourceDayIdx = sourceWeekObj?.giornate.findIndex(d => d.id === sourceDayId);
-    const isSameLogicalDay = sourceDayIdx === copyTargetDayIdx;
+    const destWeekObj = weeks.find(w => w.weekIndex === copyTargetWeek);
+    const targetDayObj = destWeekObj?.giornate[copyTargetDayIdx];
+
+    const isSameLogicalDay = !!(
+      sourceDayObj.programDayId && 
+      targetDayObj?.programDayId && 
+      sourceDayObj.programDayId === targetDayObj.programDayId
+    );
 
     // Clone exercises and regenerate instance IDs to keep them completely unique and isolated
     const clonedExercises = sourceDayObj.esercizi.map(ex => {
@@ -1364,7 +1370,6 @@ export default function WorkoutWizard({
             if (idx === copyTargetDayIdx) {
               return {
                 ...d,
-                programDayId: isSameLogicalDay ? sourceDayObj.programDayId : d.programDayId,
                 esercizi: [...d.esercizi, ...clonedExercises]
               };
             }
@@ -3891,7 +3896,7 @@ export default function WorkoutWizard({
 
                         {/* Volume Multiplier */}
                         <div className="space-y-1 col-span-1">
-                          <label className="block text-[9px] uppercase font-bold text-[#CCFF00]" style={{ color: config.primaryColor }}>Vol. Multiplier</label>
+                          <label className="block text-[9px] uppercase font-bold text-[#CCFF00]" style={{ color: config.primaryColor }}>Moltiplicatore volume</label>
                           <input
                             type="number"
                             step="0.1"
@@ -3899,7 +3904,11 @@ export default function WorkoutWizard({
                             value={b.volumeMultiplier !== undefined ? b.volumeMultiplier : 1}
                             onChange={(e) => handleUpdateBlockField(b.id, 'volumeMultiplier', parseFloat(e.target.value) || 1)}
                             className="w-full px-2 py-1.5 rounded-lg bg-black/40 border border-white/5 text-xs text-white font-mono focus:outline-none"
+                            title="Coefficiente personalizzabile utilizzato nelle stime del volume. Il valore standard è 1."
                           />
+                          <p className="text-[8px] text-white/35 leading-tight">
+                            Coefficiente personalizzabile utilizzato nelle stime del volume. Il valore standard è 1.
+                          </p>
                         </div>
                       </div>
 

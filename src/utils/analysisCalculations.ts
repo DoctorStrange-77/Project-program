@@ -94,7 +94,7 @@ export function resolveWorkoutExerciseData(
   };
 }
 
-// Order of search: exerciseId -> programRowId -> same-week exercise -> normalized name
+// Order of search: programRowId (week) -> programRowId (global) -> exerciseId (week) -> exerciseId (global) -> normalized name (week) -> normalized name (global)
 export function findMatchingWorkoutExercise(
   l: LogbookEntry,
   plan: WorkoutPlan,
@@ -106,36 +106,45 @@ export function findMatchingWorkoutExercise(
     ? plan.weeks.flatMap(w => w.giornate.flatMap(g => g.esercizi))
     : plan.giornate.flatMap(g => g.esercizi);
 
-  // 1. exerciseId
-  if (l.exerciseId) {
-    const matchInWeek = weekExercises.find(e => e.exerciseId === l.exerciseId);
-    if (matchInWeek) return matchInWeek;
-    const matchGlobal = allPlanExercises.find(e => e.exerciseId === l.exerciseId);
-    if (matchGlobal) return matchGlobal;
-  }
-
-  // 2. programRowId
+  // 1. programRowId nella settimana calcolata
   if (l.programRowId) {
     const matchInWeek = weekExercises.find(e => e.programRowId === l.programRowId);
     if (matchInWeek) return matchInWeek;
+  }
+
+  // 2. programRowId nell'intero programma
+  if (l.programRowId) {
     const matchGlobal = allPlanExercises.find(e => e.programRowId === l.programRowId);
     if (matchGlobal) return matchGlobal;
   }
 
-  // 3. Same-week exercise (by exerciseId or name)
-  if (weekExercises.length > 0) {
-    if (l.exerciseId) {
-      const matchInWeek = weekExercises.find(e => e.exerciseId === l.exerciseId);
-      if (matchInWeek) return matchInWeek;
-    }
-    const matchByNameInWeek = weekExercises.find(e => e.nome.trim().toLowerCase() === l.exerciseNome.trim().toLowerCase());
+  // 3. exerciseId nella settimana calcolata
+  if (l.exerciseId) {
+    const matchInWeek = weekExercises.find(e => e.exerciseId === l.exerciseId);
+    if (matchInWeek) return matchInWeek;
+  }
+
+  // 4. exerciseId nell'intero programma
+  if (l.exerciseId) {
+    const matchGlobal = allPlanExercises.find(e => e.exerciseId === l.exerciseId);
+    if (matchGlobal) return matchGlobal;
+  }
+
+  // 5. nome normalizzato nella stessa settimana
+  if (l.exerciseNome && weekExercises.length > 0) {
+    const normName = l.exerciseNome.trim().toLowerCase();
+    const matchByNameInWeek = weekExercises.find(e => e.nome.trim().toLowerCase() === normName);
     if (matchByNameInWeek) return matchByNameInWeek;
   }
 
-  // 4. Normalized name (across entire plan)
-  const normName = l.exerciseNome.trim().toLowerCase();
-  const matchByNameGlobal = allPlanExercises.find(e => e.nome.trim().toLowerCase() === normName);
-  return matchByNameGlobal;
+  // 6. nome normalizzato nell'intero programma
+  if (l.exerciseNome) {
+    const normName = l.exerciseNome.trim().toLowerCase();
+    const matchByNameGlobal = allPlanExercises.find(e => e.nome.trim().toLowerCase() === normName);
+    if (matchByNameGlobal) return matchByNameGlobal;
+  }
+
+  return undefined;
 }
 
 export interface SetInfo {

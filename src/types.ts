@@ -203,6 +203,12 @@ export interface LogbookSet {
   repEffettive: number;
   carico: number;
   rirEffettivo: number;
+  blockId?: string;
+  blockName?: string;
+  targetRepMin?: number;
+  targetRepMax?: number;
+  targetRir?: number;
+  targetCarico?: string;
 }
 
 export interface LogbookEntry {
@@ -215,4 +221,6 @@ export interface LogbookEntry {
   sets: LogbookSet[];
   note?: string;
   programRowId?: string;
+  weekIndex?: number;
+  programDayId?: string;
 }
