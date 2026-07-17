@@ -63,6 +63,7 @@ export default function BackupManager({
 }: BackupManagerProps) {
   const [importedBackupData, setImportedBackupData] = useState<any | null>(null);
   const [backupWasConverted, setBackupWasConverted] = useState(false);
+  const [absentKeys, setAbsentKeys] = useState<string[]>([]);
   const [hasPreImportBackup, setHasPreImportBackup] = useState(false);
   const [confirmClearStep, setConfirmClearStep] = useState(0); // 0 = default, 1 = first warning, 2 = final double warning
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -113,7 +114,7 @@ export default function BackupManager({
         const parsedData = JSON.parse(fileContent);
 
         // 1. Normalizzazione se formato precedente
-        const { normalizedData, wasConverted } = normalizeBackup(parsedData);
+        const { normalizedData, wasConverted, absentKeys: detectedAbsentKeys } = normalizeBackup(parsedData);
 
         // 2. Validazione della struttura normalizzata
         const validation = validateBackup(normalizedData);
@@ -124,6 +125,7 @@ export default function BackupManager({
         // Mostriamo l'anteprima/riassunto prima di procedere
         setImportedBackupData(normalizedData);
         setBackupWasConverted(wasConverted);
+        setAbsentKeys(detectedAbsentKeys);
         if (wasConverted) {
           onShowToast('Backup in formato precedente letto e convertito con successo! Verifica il riepilogo.', 'warning');
         } else {
@@ -133,6 +135,7 @@ export default function BackupManager({
         onShowToast(`Errore di validazione: ${err.message || 'File non valido.'}`, 'error');
         setImportedBackupData(null);
         setBackupWasConverted(false);
+        setAbsentKeys([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
       }
     };
@@ -163,6 +166,7 @@ export default function BackupManager({
           // Reset stato importazione
           setImportedBackupData(null);
           setBackupWasConverted(false);
+          setAbsentKeys([]);
           if (fileInputRef.current) fileInputRef.current.value = '';
 
           onShowToast('Database interamente ripristinato dal file di backup!', 'success');
@@ -214,6 +218,7 @@ export default function BackupManager({
 
       setImportedBackupData(null);
       setBackupWasConverted(false);
+      setAbsentKeys([]);
       if (fileInputRef.current) fileInputRef.current.value = '';
 
       onShowToast('Dati uniti con successo! Eventuali conflitti sono stati risolti.', 'success');
@@ -243,12 +248,18 @@ export default function BackupManager({
           const savedExercises = localStorage.getItem('pt_exercises');
           const savedLogbook = localStorage.getItem('pt_logbook');
 
-          if (savedConfig) onUpdateConfig(JSON.parse(savedConfig));
-          if (savedClients) onUpdateClients(JSON.parse(savedClients));
-          if (savedPlans) onUpdatePlans(JSON.parse(savedPlans));
-          if (savedTemplates) onUpdateTemplates(JSON.parse(savedTemplates));
-          if (savedExercises) onUpdateExercises(JSON.parse(savedExercises));
-          if (savedLogbook) onUpdateLogbook(JSON.parse(savedLogbook));
+          // Aggiorna SEMPRE tutti gli stati. Se una chiave non esiste, usa array vuoto o configurazione di default
+          onUpdateConfig(savedConfig ? JSON.parse(savedConfig) : {
+            nomeProgramma: '',
+            nomeCoach: '',
+            primaryColor: '#CCFF00',
+            isConfigured: false
+          });
+          onUpdateClients(savedClients ? JSON.parse(savedClients) : []);
+          onUpdatePlans(savedPlans ? JSON.parse(savedPlans) : []);
+          onUpdateTemplates(savedTemplates ? JSON.parse(savedTemplates) : []);
+          onUpdateExercises(savedExercises ? JSON.parse(savedExercises) : []);
+          onUpdateLogbook(savedLogbook ? JSON.parse(savedLogbook) : []);
 
           onShowToast('Ultimo ripristino annullato con successo! Dati riportati allo stato precedente.', 'success');
         } else {
@@ -310,27 +321,11 @@ export default function BackupManager({
   // 7. Cancellazione Totale
   const executeFullDelete = () => {
     try {
-      // 1. Snapshot dello stato corrente per consentire Rollback
-      const demoBackupData = {
-        appName: 'PT-Coach-App',
-        backupVersion: 1,
-        dataVersion: CURRENT_DATA_VERSION,
-        exportedAt: new Date().toISOString(),
-        coachConfig: config,
-        clients,
-        exercises,
-        plans,
-        templates,
-        logbook
-      };
-      // Effettua la copia in pre-import backup prima del wipe
-      localStorage.setItem('pt_pre_import_backup', JSON.stringify(demoBackupData));
+      // Svuota solo i dati specifici dell'app, salvando lo snapshot in pre-import backup tramite clearAppLocalStorage
+      clearAppLocalStorage();
       setHasPreImportBackup(true);
 
-      // 2. Svuota solo i dati specifici dell'app
-      clearAppLocalStorage();
-
-      // 3. Resetta gli stati in memoria
+      // Resetta gli stati in memoria
       onUpdateClients([]);
       onUpdatePlans([]);
       onUpdateTemplates([]);
@@ -461,6 +456,7 @@ export default function BackupManager({
               onClick={() => {
                 setImportedBackupData(null);
                 setBackupWasConverted(false);
+                setAbsentKeys([]);
                 if (fileInputRef.current) fileInputRef.current.value = '';
               }}
               className="p-1 hover:bg-white/5 rounded text-white/60 hover:text-white"
@@ -476,6 +472,26 @@ export default function BackupManager({
             </div>
           )}
 
+          {absentKeys.length > 0 && (
+            <div className="bg-red-950/20 border border-red-900/40 p-3 rounded-xl flex flex-col gap-2 text-red-400 text-[11px] font-bold">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+                <span>Attenzione: Questo backup è parziale. Mancano le seguenti sezioni principali:</span>
+              </div>
+              <ul className="list-disc pl-5 space-y-1 font-semibold text-red-300">
+                {absentKeys.map(k => (
+                  <li key={k}>{k === 'clients' ? 'Atleti (clients)' :
+                               k === 'exercises' ? 'Esercizi (exercises)' :
+                               k === 'plans' ? 'Schede (plans)' :
+                               k === 'templates' ? 'Modelli (templates)' :
+                               k === 'logbook' ? 'Rilevazioni Logbook (logbook)' :
+                               k === 'coachConfig' ? 'Configurazione Coach (coachConfig)' : k}</li>
+                ))}
+              </ul>
+              <span>La modalità "Sostituisci tutti i dati" è disabilitata per evitare la perdita irreversibile dei dati non presenti nel file. È comunque possibile utilizzare "Unisci con i dati esistenti" (i dati assenti verranno preservati).</span>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 py-1">
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">
               <span className="block text-[10px] uppercase font-bold text-white/40">Data Backup</span>
@@ -485,32 +501,47 @@ export default function BackupManager({
             </div>
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">
               <span className="block text-[10px] uppercase font-bold text-white/40">Atleti</span>
-              <span className="block text-sm font-black text-white mt-1">{importedBackupData.clients?.length || 0}</span>
+              <span className="block text-sm font-black mt-1 text-white">
+                {absentKeys.includes('clients') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.clients?.length || 0)}
+              </span>
             </div>
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">
               <span className="block text-[10px] uppercase font-bold text-white/40">Esercizi</span>
-              <span className="block text-sm font-black text-white mt-1">{importedBackupData.exercises?.length || 0}</span>
+              <span className="block text-sm font-black mt-1 text-white">
+                {absentKeys.includes('exercises') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.exercises?.length || 0)}
+              </span>
             </div>
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">
               <span className="block text-[10px] uppercase font-bold text-white/40">Schede</span>
-              <span className="block text-sm font-black text-white mt-1">{importedBackupData.plans?.length || 0}</span>
+              <span className="block text-sm font-black mt-1 text-white">
+                {absentKeys.includes('plans') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.plans?.length || 0)}
+              </span>
             </div>
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">
               <span className="block text-[10px] uppercase font-bold text-white/40">Modelli</span>
-              <span className="block text-sm font-black text-white mt-1">{importedBackupData.templates?.length || 0}</span>
+              <span className="block text-sm font-black mt-1 text-white">
+                {absentKeys.includes('templates') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.templates?.length || 0)}
+              </span>
             </div>
             <div className="bg-black/40 p-3 rounded-xl border border-white/5">
               <span className="block text-[10px] uppercase font-bold text-white/40">Logbook</span>
-              <span className="block text-sm font-black text-white mt-1">{importedBackupData.logbook?.length || 0}</span>
+              <span className="block text-sm font-black mt-1 text-white">
+                {absentKeys.includes('logbook') ? <span className="text-red-400 font-bold">Assente</span> : (importedBackupData.logbook?.length || 0)}
+              </span>
             </div>
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3 pt-2">
             <button
               onClick={() => handleReplaceAll(importedBackupData)}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-red-600 hover:bg-red-500 border border-red-500/20 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow"
+              disabled={absentKeys.length > 0}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 border rounded-xl text-xs font-bold uppercase tracking-wider transition-all shadow ${
+                absentKeys.length > 0
+                  ? 'bg-neutral-900/40 text-white/20 border-white/5 cursor-not-allowed'
+                  : 'bg-red-600 hover:bg-red-500 border-red-500/20 text-white cursor-pointer'
+              }`}
             >
-              <Trash2 className="w-4 h-4 text-white" />
+              <Trash2 className="w-4 h-4" />
               Sostituisci tutti i dati (Ripristino Completo)
             </button>
 

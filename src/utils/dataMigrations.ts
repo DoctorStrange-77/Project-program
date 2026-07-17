@@ -176,16 +176,25 @@ export function runDataMigrations(): void {
 }
 
 // 3. Normalizzazione dei backup precedenti (es: type = "pt_coach_backup")
-export function normalizeBackup(data: any): { normalizedData: any; wasConverted: boolean } {
+export function normalizeBackup(data: any): { normalizedData: any; wasConverted: boolean; absentKeys: string[] } {
   if (!data || typeof data !== 'object') {
-    return { normalizedData: data, wasConverted: false };
+    return { normalizedData: data, wasConverted: false, absentKeys: [] };
   }
+
+  // Collect absent keys FIRST from the raw input data
+  const absentKeys: string[] = [];
+  if (data.clients === undefined) absentKeys.push('clients');
+  if (data.exercises === undefined) absentKeys.push('exercises');
+  if (data.plans === undefined) absentKeys.push('plans');
+  if (data.templates === undefined) absentKeys.push('templates');
+  if (data.logbook === undefined) absentKeys.push('logbook');
+  if (data.coachConfig === undefined && data.config === undefined) absentKeys.push('coachConfig');
 
   // Verifica se è il vecchio formato
   const isOldFormat = data.type === 'pt_coach_backup' || (!data.appName && data.config);
 
   if (!isOldFormat) {
-    return { normalizedData: data, wasConverted: false };
+    return { normalizedData: data, wasConverted: false, absentKeys };
   }
 
   const normalized: any = {
@@ -196,38 +205,40 @@ export function normalizeBackup(data: any): { normalizedData: any; wasConverted:
   };
 
   // 1. Configurazione: config -> coachConfig
-  let finalConfig: any = null;
-  const rawConfig = data.coachConfig !== undefined ? data.coachConfig : data.config;
-  if (rawConfig) {
-    if (typeof rawConfig === 'string') {
-      try {
-        finalConfig = JSON.parse(rawConfig);
-      } catch {
-        finalConfig = null;
+  if (data.coachConfig !== undefined || data.config !== undefined) {
+    let finalConfig: any = null;
+    const rawConfig = data.coachConfig !== undefined ? data.coachConfig : data.config;
+    if (rawConfig) {
+      if (typeof rawConfig === 'string') {
+        try {
+          finalConfig = JSON.parse(rawConfig);
+        } catch {
+          finalConfig = null;
+        }
+      } else if (typeof rawConfig === 'object') {
+        finalConfig = rawConfig;
       }
-    } else if (typeof rawConfig === 'object') {
-      finalConfig = rawConfig;
     }
-  }
-  
-  // Fallback se coachConfig è vuoto o non valido per non sovrascrivere con un oggetto vuoto
-  if (!finalConfig || typeof finalConfig !== 'object' || Array.isArray(finalConfig)) {
-    const currentConfigStr = localStorage.getItem('pt_coach_config');
-    if (currentConfigStr) {
-      try {
-        finalConfig = JSON.parse(currentConfigStr);
-      } catch {
+    
+    // Fallback se coachConfig è vuoto o non valido per non sovrascrivere con un oggetto vuoto
+    if (!finalConfig || typeof finalConfig !== 'object' || Array.isArray(finalConfig)) {
+      const currentConfigStr = localStorage.getItem('pt_coach_config');
+      if (currentConfigStr) {
+        try {
+          finalConfig = JSON.parse(currentConfigStr);
+        } catch {
+          finalConfig = { nomeProgramma: '', nomeCoach: '', primaryColor: '#CCFF00', isConfigured: false };
+        }
+      } else {
         finalConfig = { nomeProgramma: '', nomeCoach: '', primaryColor: '#CCFF00', isConfigured: false };
       }
-    } else {
-      finalConfig = { nomeProgramma: '', nomeCoach: '', primaryColor: '#CCFF00', isConfigured: false };
     }
+    normalized.coachConfig = finalConfig;
   }
-  normalized.coachConfig = finalConfig;
 
   // Helpers per normalizzazione array (gestione stringhe da localStorage nel vecchio formato)
-  const parseArray = (key: string, backupKey?: string): any[] => {
-    const val = data[key] !== undefined ? data[key] : (backupKey ? data[backupKey] : undefined);
+  const parseArray = (key: string): any[] => {
+    const val = data[key];
     if (!val) return [];
     if (typeof val === 'string') {
       try {
@@ -240,24 +251,11 @@ export function normalizeBackup(data: any): { normalizedData: any; wasConverted:
     return Array.isArray(val) ? val : [];
   };
 
-  normalized.clients = parseArray('clients');
-  normalized.plans = parseArray('plans');
-  normalized.templates = parseArray('templates');
-  normalized.logbook = parseArray('logbook');
-
-  // Exercises mancanti -> conserva esercizi attuali o carica dal localStorage
-  let parsedExercises = parseArray('exercises');
-  if (parsedExercises.length === 0) {
-    const currentExercisesStr = localStorage.getItem('pt_exercises');
-    if (currentExercisesStr) {
-      try {
-        parsedExercises = JSON.parse(currentExercisesStr);
-      } catch {
-        parsedExercises = [];
-      }
-    }
-  }
-  normalized.exercises = parsedExercises;
+  if (data.clients !== undefined) normalized.clients = parseArray('clients');
+  if (data.plans !== undefined) normalized.plans = parseArray('plans');
+  if (data.templates !== undefined) normalized.templates = parseArray('templates');
+  if (data.logbook !== undefined) normalized.logbook = parseArray('logbook');
+  if (data.exercises !== undefined) normalized.exercises = parseArray('exercises');
 
   // Altre chiavi facoltative
   if (data.analysisSettings) {
@@ -267,7 +265,7 @@ export function normalizeBackup(data: any): { normalizedData: any; wasConverted:
     normalized.otherPtKeys = data.otherPtKeys;
   }
 
-  return { normalizedData: normalized, wasConverted: true };
+  return { normalizedData: normalized, wasConverted: true, absentKeys };
 }
 
 // 4. Validazione della struttura di backup (Obbligatorietà di tutti i dati principali)
@@ -300,26 +298,20 @@ export function validateBackup(data: any): { isValid: boolean; error?: string } 
     return { isValid: false, error: 'Data di esportazione ("exportedAt") mancante o non valida.' };
   }
 
-  // coachConfig deve essere un oggetto non nullo e non array
-  if (!data.coachConfig || typeof data.coachConfig !== 'object' || Array.isArray(data.coachConfig)) {
-    return { isValid: false, error: 'La configurazione ("coachConfig") è mancante o non è un oggetto valido.' };
+  // Se presenti, devono essere del tipo corretto
+  if ('coachConfig' in data && data.coachConfig !== undefined) {
+    if (!data.coachConfig || typeof data.coachConfig !== 'object' || Array.isArray(data.coachConfig)) {
+      return { isValid: false, error: 'La configurazione ("coachConfig") non è un oggetto valido.' };
+    }
   }
 
-  // Tutti gli array principali sono obbligatori
-  if (!Array.isArray(data.clients)) {
-    return { isValid: false, error: 'I dati dei clienti ("clients") sono mancanti o non sono un array valido.' };
-  }
-  if (!Array.isArray(data.exercises)) {
-    return { isValid: false, error: 'I dati degli esercizi ("exercises") sono mancanti o non sono un array valido.' };
-  }
-  if (!Array.isArray(data.plans)) {
-    return { isValid: false, error: 'Le schede d\'allenamento ("plans") sono mancanti o non sono un array valido.' };
-  }
-  if (!Array.isArray(data.templates)) {
-    return { isValid: false, error: 'I modelli d\'allenamento ("templates") sono mancanti o non sono un array valido.' };
-  }
-  if (!Array.isArray(data.logbook)) {
-    return { isValid: false, error: 'I dati del logbook ("logbook") sono mancanti o non sono un array valido.' };
+  const arraysToCheck = ['clients', 'exercises', 'plans', 'templates', 'logbook'];
+  for (const key of arraysToCheck) {
+    if (key in data && data[key] !== undefined) {
+      if (!Array.isArray(data[key])) {
+        return { isValid: false, error: `I dati di "${key}" presenti nel backup non sono un array valido.` };
+      }
+    }
   }
 
   return { isValid: true };
@@ -411,9 +403,12 @@ export function restorePreImportBackup(): boolean {
       localStorage.setItem(k, v);
     });
 
+    // Elimina pt_pre_import_backup soltanto dopo il completamento con successo
+    localStorage.removeItem('pt_pre_import_backup');
     return true;
   } catch (error) {
     console.error('Errore durante il rollback del backup:', error);
+    // Se il ripristino fallisce, conserva pt_pre_import_backup per consentire un nuovo tentativo
     return false;
   }
 }
@@ -421,6 +416,22 @@ export function restorePreImportBackup(): boolean {
 // 8. SOSTITUISCI TUTTI I DATI (Ripristino Completo)
 export function replaceBackup(data: any): { success: boolean; error?: string } {
   try {
+    // Verifica se ci sono campi principali assenti per mostrare un errore bloccante
+    const absentKeys: string[] = [];
+    if (data.clients === undefined) absentKeys.push('clients');
+    if (data.exercises === undefined) absentKeys.push('exercises');
+    if (data.plans === undefined) absentKeys.push('plans');
+    if (data.templates === undefined) absentKeys.push('templates');
+    if (data.logbook === undefined) absentKeys.push('logbook');
+    if (data.coachConfig === undefined) absentKeys.push('coachConfig');
+
+    if (absentKeys.length > 0) {
+      return { 
+        success: false, 
+        error: `Impossibile sovrascrivere interamente il database: il backup è parziale e mancano le seguenti sezioni principali: ${absentKeys.join(', ')}.` 
+      };
+    }
+
     // 1. Crea pre-import backup di sicurezza
     createPreImportBackup();
 
@@ -456,11 +467,16 @@ export function replaceBackup(data: any): { success: boolean; error?: string } {
         });
       }
     } catch (writeErr: any) {
-      // Rollback automatico immediato in caso di fallimento della scrittura (es: localStorage pieno)
-      appKeys.forEach(k => localStorage.removeItem(k));
+      // Rollback automatico completo in caso di fallimento della scrittura
+      // 1. Richiama getAppKeys() dopo il tentativo fallito per prendere anche nuove chiavi parzialmente create
+      const postFailKeys = getAppKeys();
+      // 2. Rimuovi tutte le chiavi dell'app attualmente presenti, comprese quelle appena create
+      postFailKeys.forEach(k => localStorage.removeItem(k));
+      // 3. Ripristina lo snapshot precedente
       Object.entries(rollbackData).forEach(([k, v]) => {
         localStorage.setItem(k, v);
       });
+      // 4. Nessuna chiave importata parzialmente rimane nel localStorage
       return { 
         success: false, 
         error: `Spazio insufficiente (localStorage pieno) o errore di scrittura. Ripristinato stato precedente: ${writeErr.message || writeErr}` 
@@ -556,7 +572,7 @@ export async function mergeBackup(
     // 1. Crea pre-import backup di sicurezza
     createPreImportBackup();
 
-    // 2. Unisci ciascun set di dati
+    // 2. Unisci ciascun set di dati (conservando i dati attuali per i campi assenti)
     const mergedClients = await mergeItems(currentClients, data.clients || [], onAskConflict, 'clients');
     const mergedExercises = await mergeItems(currentExercises, data.exercises || [], onAskConflict, 'exercises');
     const mergedPlans = await mergeItems(currentPlans, data.plans || [], onAskConflict, 'plans');
@@ -593,10 +609,15 @@ export async function mergeBackup(
       }
     } catch (writeErr: any) {
       // Rollback completo
-      appKeys.forEach(k => localStorage.removeItem(k));
+      // 1. Richiama getAppKeys() dopo il tentativo fallito per prendere anche nuove chiavi parzialmente create
+      const postFailKeys = getAppKeys();
+      // 2. Rimuovi tutte le chiavi dell'app attualmente presenti, comprese quelle appena create
+      postFailKeys.forEach(k => localStorage.removeItem(k));
+      // 3. Ripristina lo snapshot precedente
       Object.entries(rollbackData).forEach(([k, v]) => {
         localStorage.setItem(k, v);
       });
+      // 4. Nessuna chiave importata parzialmente rimane nel localStorage
       return { 
         success: false, 
         error: `Spazio insufficiente (localStorage pieno) o errore di scrittura durante l'unione. Ripristinato stato originale: ${writeErr.message || writeErr}` 
