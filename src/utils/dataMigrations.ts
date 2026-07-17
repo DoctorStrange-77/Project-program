@@ -190,21 +190,12 @@ export function normalizeBackup(data: any): {
     return { normalizedData: data, wasConverted: false, absentKeys: [], invalidKeys: ['root'] };
   }
 
-  // 2. Controllo identità del backup
-  const isCurrentFormat = data.appName === 'PT-Coach-App';
-  const isOldFormat = data.type === 'pt_coach_backup' || (!data.appName && data.config);
+  // Helper per versioni formato corrente (tipo strict number)
+  const isStrictPositiveInteger = (val: any): boolean => {
+    return typeof val === 'number' && Number.isFinite(val) && Number.isInteger(val) && val >= 1;
+  };
 
-  if (!isCurrentFormat && !isOldFormat) {
-    invalidKeys.push('root');
-    return {
-      normalizedData: data,
-      wasConverted: false,
-      absentKeys: [],
-      invalidKeys
-    };
-  }
-
-  // Helper per versioni
+  // Helper per versioni vecchio formato (permette conversione da stringa numerica)
   const parseAndValidateVersion = (val: any): number | null => {
     if (typeof val === 'number') {
       if (Number.isFinite(val) && Number.isInteger(val) && val >= 1) {
@@ -229,9 +220,50 @@ export function normalizeBackup(data: any): {
     return !isNaN(timestamp);
   };
 
+  // 2. Controllo identità del backup
+  const hasAppName = data.appName !== undefined;
+  const isCurrentFormat = hasAppName && data.appName === 'PT-Coach-App';
+
+  let isOldFormat = false;
+  if (!hasAppName) {
+    if (data.type === 'pt_coach_backup') {
+      isOldFormat = true;
+    } else {
+      // Firma più affidabile per vecchi formati privi di type:
+      // - appName assente
+      // - config presente
+      // - timestamp o version presente
+      // - almeno uno tra clients, plans, templates, exercises o logbook presente
+      const hasSomeData = data.clients !== undefined || data.plans !== undefined || data.templates !== undefined || data.exercises !== undefined || data.logbook !== undefined;
+      const hasTimestampOrVersion = data.timestamp !== undefined || data.version !== undefined;
+      if (data.config !== undefined && hasTimestampOrVersion && hasSomeData) {
+        isOldFormat = true;
+      }
+    }
+  }
+
+  // Se non è né formato corrente né vecchio formato valido, restituiamo root non valido
+  if (!isCurrentFormat && !isOldFormat) {
+    invalidKeys.push('root');
+    return {
+      normalizedData: data,
+      wasConverted: false,
+      absentKeys: [],
+      invalidKeys
+    };
+  }
+
   // 3. Valutazione versioni
   let backupVersionVal: number | null = null;
-  if (isOldFormat) {
+  if (isCurrentFormat) {
+    if (data.backupVersion === undefined) {
+      invalidKeys.push('backupVersion');
+    } else if (isStrictPositiveInteger(data.backupVersion)) {
+      backupVersionVal = data.backupVersion;
+    } else {
+      invalidKeys.push('backupVersion');
+    }
+  } else if (isOldFormat) {
     const rawVersion = data.version !== undefined ? data.version : data.backupVersion;
     if (rawVersion === undefined) {
       backupVersionVal = 1; // default per vecchio formato
@@ -241,33 +273,23 @@ export function normalizeBackup(data: any): {
         invalidKeys.push('backupVersion');
       }
     }
-  } else {
-    if (data.backupVersion === undefined) {
-      invalidKeys.push('backupVersion');
-    } else {
-      backupVersionVal = parseAndValidateVersion(data.backupVersion);
-      if (backupVersionVal === null) {
-        invalidKeys.push('backupVersion');
-      }
-    }
   }
 
   let dataVersionVal: number | null = null;
-  if (isOldFormat) {
+  if (isCurrentFormat) {
+    if (data.dataVersion === undefined) {
+      invalidKeys.push('dataVersion');
+    } else if (isStrictPositiveInteger(data.dataVersion)) {
+      dataVersionVal = data.dataVersion;
+    } else {
+      invalidKeys.push('dataVersion');
+    }
+  } else if (isOldFormat) {
     const rawDataVersion = data.dataVersion;
     if (rawDataVersion === undefined) {
       dataVersionVal = 1; // default per vecchio formato
     } else {
       dataVersionVal = parseAndValidateVersion(rawDataVersion);
-      if (dataVersionVal === null) {
-        invalidKeys.push('dataVersion');
-      }
-    }
-  } else {
-    if (data.dataVersion === undefined) {
-      invalidKeys.push('dataVersion');
-    } else {
-      dataVersionVal = parseAndValidateVersion(data.dataVersion);
       if (dataVersionVal === null) {
         invalidKeys.push('dataVersion');
       }
@@ -292,7 +314,7 @@ export function normalizeBackup(data: any): {
   }
 
   const normalized: any = {
-    appName: 'PT-Coach-App',
+    appName: isCurrentFormat ? data.appName : 'PT-Coach-App',
     backupVersion: backupVersionVal !== null ? backupVersionVal : undefined,
     dataVersion: dataVersionVal !== null ? dataVersionVal : undefined,
     exportedAt: exportedAtVal !== null ? exportedAtVal : undefined,
