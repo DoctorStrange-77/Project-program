@@ -185,21 +185,120 @@ export function normalizeBackup(data: any): {
   const absentKeys: string[] = [];
   const invalidKeys: string[] = [];
 
-  if (!data || typeof data !== 'object') {
+  // 1. Controllo tipo radice
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
     return { normalizedData: data, wasConverted: false, absentKeys: [], invalidKeys: ['root'] };
   }
 
-  // Verifica se è il vecchio formato
+  // 2. Controllo identità del backup
+  const isCurrentFormat = data.appName === 'PT-Coach-App';
   const isOldFormat = data.type === 'pt_coach_backup' || (!data.appName && data.config);
+
+  if (!isCurrentFormat && !isOldFormat) {
+    invalidKeys.push('root');
+    return {
+      normalizedData: data,
+      wasConverted: false,
+      absentKeys: [],
+      invalidKeys
+    };
+  }
+
+  // Helper per versioni
+  const parseAndValidateVersion = (val: any): number | null => {
+    if (typeof val === 'number') {
+      if (Number.isFinite(val) && Number.isInteger(val) && val >= 1) {
+        return val;
+      }
+      return null;
+    }
+    if (typeof val === 'string') {
+      const num = Number(val);
+      if (!isNaN(num) && Number.isFinite(num) && Number.isInteger(num) && num >= 1) {
+        return num;
+      }
+      return null;
+    }
+    return null;
+  };
+
+  // Helper per data
+  const isValidDate = (val: any): boolean => {
+    if (typeof val !== 'string') return false;
+    const timestamp = Date.parse(val);
+    return !isNaN(timestamp);
+  };
+
+  // 3. Valutazione versioni
+  let backupVersionVal: number | null = null;
+  if (isOldFormat) {
+    const rawVersion = data.version !== undefined ? data.version : data.backupVersion;
+    if (rawVersion === undefined) {
+      backupVersionVal = 1; // default per vecchio formato
+    } else {
+      backupVersionVal = parseAndValidateVersion(rawVersion);
+      if (backupVersionVal === null) {
+        invalidKeys.push('backupVersion');
+      }
+    }
+  } else {
+    if (data.backupVersion === undefined) {
+      invalidKeys.push('backupVersion');
+    } else {
+      backupVersionVal = parseAndValidateVersion(data.backupVersion);
+      if (backupVersionVal === null) {
+        invalidKeys.push('backupVersion');
+      }
+    }
+  }
+
+  let dataVersionVal: number | null = null;
+  if (isOldFormat) {
+    const rawDataVersion = data.dataVersion;
+    if (rawDataVersion === undefined) {
+      dataVersionVal = 1; // default per vecchio formato
+    } else {
+      dataVersionVal = parseAndValidateVersion(rawDataVersion);
+      if (dataVersionVal === null) {
+        invalidKeys.push('dataVersion');
+      }
+    }
+  } else {
+    if (data.dataVersion === undefined) {
+      invalidKeys.push('dataVersion');
+    } else {
+      dataVersionVal = parseAndValidateVersion(data.dataVersion);
+      if (dataVersionVal === null) {
+        invalidKeys.push('dataVersion');
+      }
+    }
+  }
+
+  // 4. Valutazione data esportazione
+  let exportedAtVal: string | null = null;
+  const rawExportedAt = data.exportedAt !== undefined ? data.exportedAt : data.timestamp;
+  if (rawExportedAt === undefined) {
+    if (isOldFormat) {
+      exportedAtVal = new Date().toISOString();
+    } else {
+      invalidKeys.push('exportedAt');
+    }
+  } else {
+    if (isValidDate(rawExportedAt)) {
+      exportedAtVal = rawExportedAt;
+    } else {
+      invalidKeys.push('exportedAt');
+    }
+  }
 
   const normalized: any = {
     appName: 'PT-Coach-App',
-    backupVersion: typeof data.version === 'number' ? data.version : (data.backupVersion !== undefined ? Number(data.backupVersion) : 1),
-    dataVersion: data.dataVersion !== undefined ? Number(data.dataVersion) : 1,
-    exportedAt: data.timestamp || data.exportedAt || new Date().toISOString(),
+    backupVersion: backupVersionVal !== null ? backupVersionVal : undefined,
+    dataVersion: dataVersionVal !== null ? dataVersionVal : undefined,
+    exportedAt: exportedAtVal !== null ? exportedAtVal : undefined,
   };
 
-  // 1. Array principali
+  // 5. Array principali
   const arrayKeys = ['clients', 'exercises', 'plans', 'templates', 'logbook'];
   for (const key of arrayKeys) {
     if (data[key] === undefined) {
@@ -225,7 +324,7 @@ export function normalizeBackup(data: any): {
     }
   }
 
-  // 2. Configurazione: coachConfig / config
+  // 6. Configurazione: coachConfig / config
   const hasCoachConfig = data.coachConfig !== undefined;
   const hasConfig = data.config !== undefined;
 
@@ -269,7 +368,7 @@ export function normalizeBackup(data: any): {
 
 // 4. Validazione della struttura di backup (Obbligatorietà di tutti i dati principali)
 export function validateBackup(data: any): { isValid: boolean; error?: string } {
-  if (!data || typeof data !== 'object') {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
     return { isValid: false, error: 'Il file JSON non contiene un oggetto valido.' };
   }
   
@@ -278,11 +377,23 @@ export function validateBackup(data: any): { isValid: boolean; error?: string } 
     return { isValid: false, error: 'Questo backup appartiene a un\'altra applicazione o ha un formato sconosciuto.' };
   }
   
-  if (data.backupVersion === undefined || typeof data.backupVersion !== 'number') {
+  if (
+    data.backupVersion === undefined || 
+    typeof data.backupVersion !== 'number' || 
+    !Number.isFinite(data.backupVersion) || 
+    !Number.isInteger(data.backupVersion) || 
+    data.backupVersion < 1
+  ) {
     return { isValid: false, error: 'Versione del backup ("backupVersion") mancante o non valida.' };
   }
 
-  if (data.dataVersion === undefined || typeof data.dataVersion !== 'number') {
+  if (
+    data.dataVersion === undefined || 
+    typeof data.dataVersion !== 'number' || 
+    !Number.isFinite(data.dataVersion) || 
+    !Number.isInteger(data.dataVersion) || 
+    data.dataVersion < 1
+  ) {
     return { isValid: false, error: 'Versione dei dati ("dataVersion") mancante o non valida.' };
   }
 
@@ -293,7 +404,7 @@ export function validateBackup(data: any): { isValid: boolean; error?: string } 
     };
   }
 
-  if (!data.exportedAt || typeof data.exportedAt !== 'string') {
+  if (!data.exportedAt || typeof data.exportedAt !== 'string' || isNaN(Date.parse(data.exportedAt))) {
     return { isValid: false, error: 'Data di esportazione ("exportedAt") mancante o non valida.' };
   }
 
