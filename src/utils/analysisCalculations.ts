@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Client, WorkoutPlan, WorkoutWeek, WorkoutDay, WorkoutExercise, LogbookEntry, LogbookSet, CoachConfig, AnalisiSettings } from '../types';
+import { Client, WorkoutPlan, WorkoutWeek, WorkoutDay, WorkoutExercise, LogbookEntry, LogbookSet, CoachConfig, AnalisiSettings, DistrettoMuscolare, WorkoutExerciseBlock, Exercise } from '../types';
+import { INITIAL_EXERCISES } from '../data/exercises';
 
 // Parser for weights from string (handles "60kg", "24kg+24kg", "20", etc.)
 export function parseWeight(str?: string): number {
@@ -23,6 +24,172 @@ export function parseTUT(tut?: string): number {
     return parts.reduce((a, b) => a + b, 0);
   }
   return 3;
+}
+
+// Retrieves all exercises from database
+export function getDatabaseExercises(): Exercise[] {
+  if (typeof window !== 'undefined') {
+    try {
+      const saved = localStorage.getItem('coach_exercises');
+      if (saved) {
+        return JSON.parse(saved) as Exercise[];
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+  return INITIAL_EXERCISES;
+}
+
+export interface ResolvedExerciseData {
+  distrettoMuscolare: DistrettoMuscolare;
+  distrettiSecondari: string[];
+  modalitaConteggio: 'entrambi_i_lati' | 'singolo_lato';
+}
+
+// Priority resolver for WorkoutExercise metadata
+export function resolveWorkoutExerciseData(
+  ex: WorkoutExercise,
+  dbExercises: Exercise[]
+): ResolvedExerciseData {
+  // 1. Trova l'Exercise originale tramite exerciseId (preferito) o nome (fallback)
+  const dbEx = dbExercises.find(d => d.id === ex.exerciseId) || dbExercises.find(d => d.nome.toLowerCase() === ex.nome.toLowerCase());
+  
+  // Base values from dbEx or fallbacks if dbEx not found
+  const baseDistretto = dbEx ? dbEx.distrettoMuscolare : ex.distrettoMuscolare;
+  
+  // Distretti Secondari: priority 1: dbEx, priority 2: ex instance override, priority 3: fallback based on name
+  let baseSecondaries: string[] | undefined;
+  if (dbEx && dbEx.distrettiSecondari !== undefined) {
+    baseSecondaries = dbEx.distrettiSecondari;
+  } else if (ex && (ex as any).distrettiSecondari !== undefined) {
+    const sec = (ex as any).distrettiSecondari;
+    if (Array.isArray(sec)) {
+      baseSecondaries = sec;
+    } else if (typeof sec === 'string') {
+      baseSecondaries = sec.split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
+  }
+  
+  if (baseSecondaries === undefined) {
+    baseSecondaries = getFallbackSecondaries(dbEx ? dbEx.nome : ex.nome, baseDistretto);
+  }
+  
+  // Modalità Conteggio: base from dbEx, override from ex instance, default 'entrambi_i_lati'
+  const baseModalita = dbEx?.modalitaConteggio || ex.modalitaConteggio || 'entrambi_i_lati';
+  
+  // Instance Overrides
+  const distrettoMuscolare = ex.distrettoMuscolare || baseDistretto;
+  const distrettiSecondari = baseSecondaries;
+  const modalitaConteggio = ex.modalitaConteggio || baseModalita;
+  
+  return {
+    distrettoMuscolare,
+    distrettiSecondari,
+    modalitaConteggio
+  };
+}
+
+export interface SetInfo {
+  reps: number;
+  tut: number;
+  recupero: number; // in seconds
+  carico: number;
+  volumeMultiplier: number;
+  rir?: number;
+}
+
+// Return detailed list of sets for an exercise, supporting both blocks and legacy structures
+export function getExerciseSets(ex: WorkoutExercise, dbExercises: Exercise[]): SetInfo[] {
+  const tutSecs = parseTUT(ex.tut);
+  
+  if (ex.blocks && ex.blocks.length > 0) {
+    const sets: SetInfo[] = [];
+    ex.blocks.forEach(b => {
+      const reps = (b.repMin + b.repMax) / 2;
+      const blockTut = b.tut ? parseTUT(b.tut) : tutSecs;
+      const blockRec = b.recupero !== undefined ? b.recupero : (ex.recupero || 90);
+      const blockCarico = parseWeight(b.caricoPrevisto);
+      const volMult = b.volumeMultiplier !== undefined ? b.volumeMultiplier : 1;
+      
+      for (let i = 0; i < b.serie; i++) {
+        sets.push({
+          reps,
+          tut: blockTut,
+          recupero: blockRec,
+          carico: blockCarico,
+          volumeMultiplier: volMult,
+          rir: b.rir
+        });
+      }
+    });
+    return sets;
+  } else {
+    const sets: SetInfo[] = [];
+    const reps = (ex.repMin + ex.repMax) / 2;
+    const rec = ex.recupero || 90;
+    const carico = parseWeight(ex.caricoPrevisto);
+    for (let i = 0; i < ex.serie; i++) {
+      sets.push({
+        reps,
+        tut: tutSecs,
+        recupero: rec,
+        carico,
+        volumeMultiplier: 1,
+        rir: ex.rir
+      });
+    }
+    return sets;
+  }
+}
+
+// Sum of series of blocks, or fallback to legacy serie field
+export function getExerciseSetsCount(ex: WorkoutExercise): number {
+  if (ex.blocks && ex.blocks.length > 0) {
+    return ex.blocks.reduce((sum, b) => sum + (b.serie || 0), 0);
+  }
+  return ex.serie || 0;
+}
+
+// Reps count taking into account blocks
+export function getExerciseRepsCount(ex: WorkoutExercise): number {
+  if (ex.blocks && ex.blocks.length > 0) {
+    return ex.blocks.reduce((sum, b) => sum + (b.serie * ((b.repMin + b.repMax) / 2)), 0);
+  }
+  return (ex.serie || 0) * (((ex.repMin || 0) + (ex.repMax || 0)) / 2);
+}
+
+// Calculates volume load for a single block/set structure
+export function getBlockVolumeLoad(
+  b: { serie: number; repMin: number; repMax: number; caricoPrevisto?: string },
+  multiplier: number = 1
+): number | null {
+  if (b.caricoPrevisto === undefined || b.caricoPrevisto === null || b.caricoPrevisto.trim() === '') {
+    return null; // indicate volume load not available
+  }
+  const load = parseWeight(b.caricoPrevisto);
+  const avgReps = (b.repMin + b.repMax) / 2;
+  return b.serie * avgReps * load * multiplier;
+}
+
+// Calculates overall volume load for a WorkoutExercise
+export function getExerciseVolumeLoad(ex: WorkoutExercise): number | null {
+  if (ex.blocks && ex.blocks.length > 0) {
+    let sum = 0;
+    for (const b of ex.blocks) {
+      const vol = getBlockVolumeLoad(b, b.volumeMultiplier ?? 1);
+      if (vol === null) return null; // Missing load on a block renders exercise volume load unavailable
+      sum += vol;
+    }
+    return sum;
+  } else {
+    return getBlockVolumeLoad({
+      serie: ex.serie,
+      repMin: ex.repMin,
+      repMax: ex.repMax,
+      caricoPrevisto: ex.caricoPrevisto
+    }, 1);
+  }
 }
 
 // Generate the advanced 6-week demo data programmatically
@@ -192,29 +359,89 @@ export function getFallbackSecondaries(name: string, primary: string): string[] 
   return secondaries;
 }
 
-// Calculate duration for a single day based on exercise specifics and transition times
-export function estimateDayDuration(day: WorkoutDay, settings: AnalisiSettings): number {
+// Group-aware and block-aware training session duration estimator
+export function estimateDayDuration(
+  day: WorkoutDay,
+  settings: AnalisiSettings,
+  dbExercises: Exercise[] = getDatabaseExercises()
+): number {
   const transition = settings.tempoTransizione ?? 90;
-  let totalSeconds = 0;
   if (!day.esercizi || day.esercizi.length === 0) return 0;
 
-  // Track sets and rests
-  day.esercizi.forEach((ex) => {
-    const s = ex.serie || 0;
-    const reps = (ex.repMin + ex.repMax) / 2 || 10;
-    const tutSecs = parseTUT(ex.tut);
-    const setDuration = reps * tutSecs;
-    const exerciseRest = ex.recupero || 90;
+  // 1. Group contiguous exercises with same non-empty groupId
+  interface ExerciseGroup {
+    groupId?: string;
+    exercises: WorkoutExercise[];
+  }
 
-    // Time for sets + rests inside this exercise
-    const exerciseTime = (s * setDuration) + (Math.max(0, s - 1) * exerciseRest);
-    totalSeconds += exerciseTime;
+  const groups: ExerciseGroup[] = [];
+  let currentGroup: ExerciseGroup | null = null;
+
+  day.esercizi.forEach(ex => {
+    if (ex.groupId) {
+      if (currentGroup && currentGroup.groupId === ex.groupId) {
+        currentGroup.exercises.push(ex);
+      } else {
+        currentGroup = {
+          groupId: ex.groupId,
+          exercises: [ex]
+        };
+        groups.push(currentGroup);
+      }
+    } else {
+      currentGroup = null;
+      groups.push({
+        exercises: [ex]
+      });
+    }
   });
 
-  // Add transition times between exercises
-  totalSeconds += (day.esercizi.length - 1) * transition;
+  let totalSeconds = 0;
 
-  return Math.round(totalSeconds / 60); // return in minutes
+  // 2. Calculate duration of each contiguous group
+  groups.forEach(group => {
+    const groupExsSets = group.exercises.map(e => getExerciseSets(e, dbExercises));
+    const numRounds = Math.max(...groupExsSets.map(sets => sets.length));
+
+    for (let r = 0; r < numRounds; r++) {
+      let activeSetsInRound: SetInfo[] = [];
+      
+      group.exercises.forEach((ex, eIdx) => {
+        const sets = groupExsSets[eIdx];
+        if (r < sets.length) {
+          activeSetsInRound.push(sets[r]);
+        }
+      });
+
+      // Sum set durations
+      activeSetsInRound.forEach(set => {
+        totalSeconds += set.reps * set.tut;
+      });
+
+      // Transition time between sequential exercises in the same round inside a group
+      if (activeSetsInRound.length > 1) {
+        totalSeconds += (activeSetsInRound.length - 1) * transition;
+      }
+
+      // Rest/Recovery after round
+      if (r < numRounds - 1) {
+        const firstEx = group.exercises[0];
+        if (group.exercises.length > 1 && firstEx.groupRest !== undefined) {
+          totalSeconds += firstEx.groupRest;
+        } else {
+          const lastSet = activeSetsInRound[activeSetsInRound.length - 1];
+          totalSeconds += lastSet ? lastSet.recupero : (firstEx.recupero || 90);
+        }
+      }
+    }
+  });
+
+  // 3. Add transition times between different groups/exercises
+  if (groups.length > 1) {
+    totalSeconds += (groups.length - 1) * transition;
+  }
+
+  return Math.round(totalSeconds / 60); // minutes
 }
 
 export interface AnalysisResults {
@@ -448,6 +675,8 @@ export function runFullAnalysis(
     return res;
   }
 
+  const dbExercises = getDatabaseExercises();
+
   // Flatten scheduled exercises and logbook entries based on Week and Day filters
   interface ScheduledItem {
     weekIndex: number;
@@ -476,10 +705,11 @@ export function runFullAnalysis(
       }
 
       d.esercizi.forEach(ex => {
+        const resolved = resolveWorkoutExerciseData(ex, dbExercises);
+        
         // Apply muscle filter
-        const isMainMuscle = filters.muscle === 'all' || ex.distrettoMuscolare === filters.muscle;
-        const secondaries = getFallbackSecondaries(ex.nome, ex.distrettoMuscolare);
-        const isSecondaryMuscle = filters.muscle !== 'all' && secondaries.includes(filters.muscle);
+        const isMainMuscle = filters.muscle === 'all' || resolved.distrettoMuscolare === filters.muscle;
+        const isSecondaryMuscle = filters.muscle !== 'all' && resolved.distrettiSecondari.includes(filters.muscle);
         
         if (filters.muscle !== 'all' && !isMainMuscle && !isSecondaryMuscle) {
           return;
@@ -519,19 +749,21 @@ export function runFullAnalysis(
       return;
     }
 
-    // Apply muscle and exercise filter by looking at the specific log item
+    // Apply exercise filter
     if (filters.exerciseName !== 'all' && l.exerciseNome.toLowerCase() !== filters.exerciseName.toLowerCase()) {
       return;
     }
 
     // Secondary muscles lookup
-    const mockMain = l.sets[0] ? 'Pettorali' : 'Pettorali'; // placeholder or fallback
     const matchedEx = planInScope!.giornate.flatMap(g => g.esercizi).find(e => e.nome.toLowerCase() === l.exerciseNome.toLowerCase());
-    const distretto = matchedEx ? matchedEx.distrettoMuscolare : 'Pettorali';
-    const secondaries = matchedEx ? getFallbackSecondaries(matchedEx.nome, matchedEx.distrettoMuscolare) : [];
+    const resolved = matchedEx ? resolveWorkoutExerciseData(matchedEx, dbExercises) : {
+      distrettoMuscolare: 'Pettorali' as DistrettoMuscolare,
+      distrettiSecondari: getFallbackSecondaries(l.exerciseNome, 'Pettorali'),
+      modalitaConteggio: 'entrambi_i_lati' as const
+    };
 
-    const isMainMuscle = filters.muscle === 'all' || distretto === filters.muscle;
-    const isSecMuscle = filters.muscle !== 'all' && secondaries.includes(filters.muscle);
+    const isMainMuscle = filters.muscle === 'all' || resolved.distrettoMuscolare === filters.muscle;
+    const isSecMuscle = filters.muscle !== 'all' && resolved.distrettiSecondari.includes(filters.muscle);
 
     if (filters.muscle !== 'all' && !isMainMuscle && !isSecMuscle) {
       return;
@@ -546,24 +778,20 @@ export function runFullAnalysis(
   // Calculate high-level scheduled metrics
   res.totalWorkoutsScheduled = Array.from(new Set(schExercises.map(s => `${s.weekIndex}-${s.dayName}`))).length;
   res.totalExercisesCount = Array.from(new Set(schExercises.map(s => s.exercise.nome))).length;
-  res.totalSetsScheduled = schExercises.reduce((sum, s) => sum + s.exercise.serie, 0);
-  res.totalRepsScheduled = schExercises.reduce((sum, s) => sum + (s.exercise.serie * ((s.exercise.repMin + s.exercise.repMax) / 2)), 0);
+  res.totalSetsScheduled = schExercises.reduce((sum, s) => sum + getExerciseSetsCount(s.exercise), 0);
+  res.totalRepsScheduled = schExercises.reduce((sum, s) => sum + getExerciseRepsCount(s.exercise), 0);
   
   // Calculate Volume Load Scheduled
   let totalVolSched = 0;
-  let countVolSched = 0;
   schExercises.forEach(s => {
-    const wVal = parseWeight(s.exercise.caricoPrevisto);
-    if (wVal > 0) {
-      const avgReps = (s.exercise.repMin + s.exercise.repMax) / 2;
-      totalVolSched += s.exercise.serie * avgReps * wVal;
-      countVolSched++;
+    const vol = getExerciseVolumeLoad(s.exercise);
+    if (vol !== null) {
+      totalVolSched += vol;
     }
   });
   res.totalVolumeLoadScheduled = totalVolSched;
 
   // Calculate Duration Scheduled
-  // Estimate day by day in scope
   const uniqueWeekDays = Array.from(new Set(schExercises.map(s => `${s.weekIndex}-${s.dayId}`)));
   let durationSchedSum = 0;
   uniqueWeekDays.forEach(wd => {
@@ -572,17 +800,36 @@ export function runFullAnalysis(
     const weekObj = weeksList.find(wk => wk.weekIndex === wIdx);
     const dayObj = (weekObj ? weekObj.giornate : planInScope!.giornate || []).find(d => d.id === dId || d.nome === dId);
     if (dayObj) {
-      durationSchedSum += estimateDayDuration(dayObj, settings);
+      durationSchedSum += estimateDayDuration(dayObj, settings, dbExercises);
     }
   });
   res.totalDurationScheduled = durationSchedSum;
   res.avgDurationScheduled = res.totalWorkoutsScheduled > 0 ? Math.round(durationSchedSum / res.totalWorkoutsScheduled) : 0;
 
   // Average recovery & Planned RIR
-  const recSum = schExercises.reduce((sum, s) => sum + (s.exercise.recupero || 90), 0);
-  res.avgRecuperoScheduled = schExercises.length > 0 ? Math.round(recSum / schExercises.length) : 0;
-  const rirSum = schExercises.reduce((sum, s) => sum + (s.exercise.rir || 0), 0);
-  res.avgRirScheduled = schExercises.length > 0 ? Math.round((rirSum / schExercises.length) * 10) / 10 : 0;
+  let totalRecSum = 0;
+  let recCount = 0;
+  schExercises.forEach(s => {
+    const sets = getExerciseSets(s.exercise, dbExercises);
+    sets.forEach(set => {
+      totalRecSum += set.recupero;
+      recCount++;
+    });
+  });
+  res.avgRecuperoScheduled = recCount > 0 ? Math.round(totalRecSum / recCount) : 0;
+
+  let rirSchSum = 0;
+  let rirSchCount = 0;
+  schExercises.forEach(s => {
+    const sets = getExerciseSets(s.exercise, dbExercises);
+    sets.forEach(set => {
+      if (set.rir !== undefined) {
+        rirSchSum += set.rir;
+        rirSchCount++;
+      }
+    });
+  });
+  res.avgRirScheduled = rirSchCount > 0 ? Math.round((rirSchSum / rirSchCount) * 10) / 10 : 0;
 
   // High level EXECUTED metrics from Logbook
   const uniqueLogDates = Array.from(new Set(logEntries.map(l => l.data)));
@@ -599,7 +846,6 @@ export function runFullAnalysis(
   res.totalVolumeLoadExecuted = totalVolExec;
 
   // Duration executed calculation:
-  // Since we don't track clock-in clock-out, we estimate executed duration based on logged exercises
   // Group logbook entries by date
   const logsByDate: Record<string, LogbookEntry[]> = {};
   logEntries.forEach(l => {
@@ -610,22 +856,39 @@ export function runFullAnalysis(
   let durationExecSum = 0;
   Object.keys(logsByDate).forEach(date => {
     const dailyLogs = logsByDate[date];
-    let dailySecs = 0;
+    const resolvedExs: WorkoutExercise[] = [];
     dailyLogs.forEach(l => {
-      const setsCount = l.sets.length;
-      const matchedEx = planInScope!.giornate.flatMap(g => g.esercizi).find(e => e.nome.toLowerCase() === l.exerciseNome.toLowerCase());
-      const tutSecs = matchedEx ? parseTUT(matchedEx.tut) : 3;
-      const recovery = matchedEx ? matchedEx.recupero : 90;
-      
-      l.sets.forEach(s => {
-        dailySecs += (s.repEffettive * tutSecs);
-      });
-      dailySecs += Math.max(0, setsCount - 1) * recovery;
+      const matchedEx = planInScope!.giornate
+        .flatMap(g => g.esercizi)
+        .find(e => e.nome.toLowerCase() === l.exerciseNome.toLowerCase());
+      if (matchedEx) {
+        const logSetsCount = l.sets.length;
+        const tempEx: WorkoutExercise = {
+          ...matchedEx,
+          serie: logSetsCount,
+          blocks: matchedEx.blocks && matchedEx.blocks.length > 0 ? matchedEx.blocks.map(b => ({
+            ...b,
+            serie: Math.min(b.serie, logSetsCount)
+          })) : undefined
+        };
+        resolvedExs.push(tempEx);
+      } else {
+        resolvedExs.push({
+          id: 'dummy',
+          exerciseId: '',
+          nome: l.exerciseNome,
+          distrettoMuscolare: 'Pettorali',
+          serie: l.sets.length,
+          repMin: 8,
+          repMax: 12,
+          rir: 2,
+          recupero: 90,
+          tut: '3-0-1-0'
+        });
+      }
     });
-    // Transitions
-    const transition = settings.tempoTransizione ?? 90;
-    dailySecs += (dailyLogs.length - 1) * transition;
-    durationExecSum += Math.round(dailySecs / 60);
+
+    durationExecSum += estimateDayDuration({ id: 'any', nome: 'Executed', esercizi: resolvedExs }, settings, dbExercises);
   });
 
   res.totalDurationExecuted = durationExecSum;
@@ -651,10 +914,8 @@ export function runFullAnalysis(
   // Adherences & Completion Rate
   res.aderenzaAllenamenti = res.totalWorkoutsScheduled > 0 ? Math.round((res.totalWorkoutsExecuted / res.totalWorkoutsScheduled) * 100) : 0;
   res.aderenzaSerie = res.totalSetsScheduled > 0 ? Math.round((res.totalSetsExecuted / res.totalSetsScheduled) * 100) : 0;
-  // Completion index balances workout execution and set completions
   res.completamentoPercent = Math.min(100, Math.round((res.aderenzaAllenamenti * 0.4) + (res.aderenzaSerie * 0.6)));
 
-  // List of all 14 muscle groups
   const DISTRICTS: string[] = [
     'Pettorali', 'Dorso', 'Deltoidi anteriori', 'Deltoidi laterali', 'Deltoidi posteriori',
     'Spalle', 'Bicipiti', 'Tricipiti', 'Quadricipiti', 'Femorali', 'Glutei', 'Adduttori', 'Abduttori', 'Polpacci', 'Addome'
@@ -670,26 +931,28 @@ export function runFullAnalysis(
     // Scheduled matching
     schExercises.forEach(s => {
       const ex = s.exercise;
-      const secs = getFallbackSecondaries(ex.nome, ex.distrettoMuscolare);
+      const resolved = resolveWorkoutExerciseData(ex, dbExercises);
+      const exSets = getExerciseSetsCount(ex);
       
-      if (ex.distrettoMuscolare === dist) {
-        direct += ex.serie;
-        scheduledSets += ex.serie;
-      } else if (secs.includes(dist)) {
-        secondary += ex.serie * coeff;
+      if (resolved.distrettoMuscolare === dist) {
+        direct += exSets;
+        scheduledSets += exSets;
+      } else if (resolved.distrettiSecondari.includes(dist)) {
+        secondary += exSets * coeff;
       }
     });
 
     // Executed matching
     logEntries.forEach(l => {
       const matchedEx = planInScope!.giornate.flatMap(g => g.esercizi).find(e => e.nome.toLowerCase() === l.exerciseNome.toLowerCase());
-      const distretto = matchedEx ? matchedEx.distrettoMuscolare : 'Pettorali';
-      const secs = matchedEx ? getFallbackSecondaries(matchedEx.nome, matchedEx.distrettoMuscolare) : [];
+      const resolved = matchedEx ? resolveWorkoutExerciseData(matchedEx, dbExercises) : {
+        distrettoMuscolare: 'Pettorali' as DistrettoMuscolare,
+        distrettiSecondari: getFallbackSecondaries(l.exerciseNome, 'Pettorali'),
+        modalitaConteggio: 'entrambi_i_lati' as const
+      };
 
-      if (distretto === dist) {
+      if (resolved.distrettoMuscolare === dist) {
         executedSets += l.sets.length;
-      } else if (secs.includes(dist)) {
-        // secondary weighted sets executed
       }
     });
 
@@ -705,7 +968,6 @@ export function runFullAnalysis(
 
   // 3. Weekly Trend (Week 1 to durations)
   for (let w = 1; w <= planWeeksCount; w++) {
-    // Filter scheduled for this week only
     const weekSch = schExercisesAllWeeks.filter(s => s.weekIndex === w);
     const weekLogs = logEntriesAllWeeks.filter(l => {
       const planStart = new Date(planInScope!.dataInizio || '2026-06-01');
@@ -716,12 +978,15 @@ export function runFullAnalysis(
       return calculatedWeek === w;
     });
 
-    const sets = weekSch.reduce((sum, s) => sum + s.exercise.serie, 0);
+    const sets = weekSch.reduce((sum, s) => sum + getExerciseSetsCount(s.exercise), 0);
     const setsExecuted = weekLogs.reduce((sum, l) => sum + l.sets.length, 0);
     
     let vol = 0;
     weekSch.forEach(s => {
-      vol += s.exercise.serie * ((s.exercise.repMin + s.exercise.repMax) / 2) * parseWeight(s.exercise.caricoPrevisto);
+      const exVol = getExerciseVolumeLoad(s.exercise);
+      if (exVol !== null) {
+        vol += exVol;
+      }
     });
 
     let volExecuted = 0;
@@ -731,11 +996,21 @@ export function runFullAnalysis(
       });
     });
 
-    const reps = weekSch.reduce((sum, s) => sum + s.exercise.serie * ((s.exercise.repMin + s.exercise.repMax) / 2), 0);
+    const reps = weekSch.reduce((sum, s) => sum + getExerciseRepsCount(s.exercise), 0);
     const repsExecuted = weekLogs.reduce((sum, l) => sum + l.sets.reduce((sSum, s) => sSum + s.repEffettive, 0), 0);
 
-    const rSum = weekSch.reduce((sum, s) => sum + s.exercise.rir, 0);
-    const avgRir = weekSch.length > 0 ? rSum / weekSch.length : 0;
+    let rSchSumWeek = 0;
+    let rSchCountWeek = 0;
+    weekSch.forEach(s => {
+      const sets = getExerciseSets(s.exercise, dbExercises);
+      sets.forEach(set => {
+        if (set.rir !== undefined) {
+          rSchSumWeek += set.rir;
+          rSchCountWeek++;
+        }
+      });
+    });
+    const avgRir = rSchCountWeek > 0 ? rSchSumWeek / rSchCountWeek : 0;
 
     let reRirSum = 0;
     let reRirCount = 0;
@@ -749,7 +1024,6 @@ export function runFullAnalysis(
     });
     const avgRirExecuted = reRirCount > 0 ? reRirSum / reRirCount : 0;
 
-    // Completion percentage for this week
     const uniqueSchDays = Array.from(new Set(weekSch.map(s => s.dayId))).length;
     const uniqueExecDays = Array.from(new Set(weekLogs.map(l => l.data))).length;
     const wkAdherence = uniqueSchDays > 0 ? (uniqueExecDays / uniqueSchDays) * 100 : 0;
@@ -766,7 +1040,7 @@ export function runFullAnalysis(
       repsExecuted,
       avgRir: Math.round(avgRir * 10) / 10,
       avgRirExecuted: Math.round(avgRirExecuted * 10) / 10,
-      duration: Math.round(vol / 1000), // scaled dummy or estimate
+      duration: Math.round(vol / 1000), // scaled estimate
       completion
     });
   }
@@ -779,8 +1053,9 @@ export function runFullAnalysis(
     DISTRICTS.forEach(dist => {
       let sets = 0;
       weekSch.forEach(s => {
-        if (s.exercise.distrettoMuscolare === dist) {
-          sets += s.exercise.serie || 0;
+        const resolved = resolveWorkoutExerciseData(s.exercise, dbExercises);
+        if (resolved.distrettoMuscolare === dist) {
+          sets += getExerciseSetsCount(s.exercise);
         }
       });
       row[dist] = sets;
@@ -790,7 +1065,6 @@ export function runFullAnalysis(
   res.weeklyDistrictVolume = weeklyDistrictVolume;
 
   // 4. Planned vs Executed Chart
-  // Fill weekly
   res.plannedVsExecuted = res.weeklyTrend.map(wt => ({
     name: wt.week,
     progSets: wt.sets,
@@ -807,17 +1081,16 @@ export function runFullAnalysis(
     percentage: totalSetsSum > 0 ? Math.round((v.weighted / totalSetsSum) * 100) : 0
   })).sort((a, b) => b.sets - a.sets);
 
-  // 6. Heatmap Grid (Districts vs Days/Weeks)
+  // 6. Heatmap Grid
+  const dayNamesInPlan = Array.from(new Set(planInScope.giornate.map(d => d.nome)));
   res.heatmap = DISTRICTS.map(dist => {
     const row: any = { district: dist };
-    // Days breakdown
-    const dayNames = ['A: Spinta', 'B: Trazione', 'C: Gambe', 'D: Focus'];
-    dayNames.forEach(dName => {
-      const matchKey = dName.split(':')[0];
+    dayNamesInPlan.forEach(dName => {
       let seriesCount = 0;
       schExercises.forEach(s => {
-        if (s.exercise.distrettoMuscolare === dist && s.dayName.includes(matchKey)) {
-          seriesCount += s.exercise.serie;
+        const resolved = resolveWorkoutExerciseData(s.exercise, dbExercises);
+        if (resolved.distrettoMuscolare === dist && s.dayName === dName) {
+          seriesCount += getExerciseSetsCount(s.exercise);
         }
       });
       row[dName] = seriesCount;
@@ -827,13 +1100,14 @@ export function runFullAnalysis(
 
   // 7. Training Frequency
   res.frequency = DISTRICTS.map(dist => {
-    // Days active
     const activeDays = Array.from(new Set(
-      schExercises.filter(s => s.exercise.distrettoMuscolare === dist).map(s => s.dayName.split(':')[0].trim())
+      schExercises.filter(s => {
+        const resolved = resolveWorkoutExerciseData(s.exercise, dbExercises);
+        return resolved.distrettoMuscolare === dist;
+      }).map(s => s.dayName.split(':')[0].trim())
     ));
     const sedute = activeDays.length;
     
-    // Distances calculation
     let distanzaMedia = 0;
     let distanzaMin = 0;
     let distanzaMax = 0;
@@ -864,17 +1138,23 @@ export function runFullAnalysis(
     const daySch = schExercises.filter(s => s.dayName === dName);
     const dayObj: any = {
       dayName: dName,
-      totalSets: daySch.reduce((sum, s) => sum + s.exercise.serie, 0),
+      totalSets: daySch.reduce((sum, s) => sum + getExerciseSetsCount(s.exercise), 0),
       totalExercises: daySch.length,
-      duration: estimateDayDuration({ id: 'any', nome: dName, esercizi: daySch.map(s => s.exercise) }, settings),
-      avgRecupero: daySch.length > 0 ? Math.round(daySch.reduce((sum, s) => sum + (s.exercise.recupero || 90), 0) / daySch.length) : 0
+      duration: estimateDayDuration({ id: 'any', nome: dName, esercizi: daySch.map(s => s.exercise) }, settings, dbExercises),
+      avgRecupero: daySch.length > 0 ? Math.round(daySch.reduce((sum, s) => {
+        const sets = getExerciseSets(s.exercise, dbExercises);
+        const recSum = sets.reduce((rSum, set) => rSum + set.recupero, 0);
+        return sum + (sets.length > 0 ? recSum / sets.length : 90);
+      }, 0) / daySch.length) : 0
     };
 
-    // Muscle breakdown
     DISTRICTS.forEach(dist => {
-      const match = daySch.filter(s => s.exercise.distrettoMuscolare === dist);
+      const match = daySch.filter(s => {
+        const resolved = resolveWorkoutExerciseData(s.exercise, dbExercises);
+        return resolved.distrettoMuscolare === dist;
+      });
       if (match.length > 0) {
-        dayObj[dist] = match.reduce((sum, s) => sum + s.exercise.serie, 0);
+        dayObj[dist] = match.reduce((sum, s) => sum + getExerciseSetsCount(s.exercise), 0);
       }
     });
 
@@ -888,14 +1168,17 @@ export function runFullAnalysis(
     let executedSets = 0;
 
     schExercises.forEach(s => {
-      const r = s.exercise.rir;
-      if (bin === 'RIR 0' && r === 0) scheduledSets += s.exercise.serie;
-      else if (bin === 'RIR 1' && r === 1) scheduledSets += s.exercise.serie;
-      else if (bin === 'RIR 2' && r === 2) scheduledSets += s.exercise.serie;
-      else if (bin === 'RIR 3' && r === 3) scheduledSets += s.exercise.serie;
-      else if (bin === 'RIR 4' && r === 4) scheduledSets += s.exercise.serie;
-      else if (bin === 'RIR 5+' && r >= 5) scheduledSets += s.exercise.serie;
-      else if (bin === 'Non indicato' && r === undefined) scheduledSets += s.exercise.serie;
+      const sets = getExerciseSets(s.exercise, dbExercises);
+      sets.forEach(set => {
+        const r = set.rir;
+        if (bin === 'RIR 0' && r === 0) scheduledSets++;
+        else if (bin === 'RIR 1' && r === 1) scheduledSets++;
+        else if (bin === 'RIR 2' && r === 2) scheduledSets++;
+        else if (bin === 'RIR 3' && r === 3) scheduledSets++;
+        else if (bin === 'RIR 4' && r === 4) scheduledSets++;
+        else if (bin === 'RIR 5+' && r >= 5) scheduledSets++;
+        else if (bin === 'Non indicato' && r === undefined) scheduledSets++;
+      });
     });
 
     logEntries.forEach(l => {
@@ -925,17 +1208,47 @@ export function runFullAnalysis(
     { label: 'Isometrico', min: 0, max: 0 }
   ];
 
-  const totalSetsRepSum = schExercises.reduce((sum, s) => sum + s.exercise.serie, 0);
-  res.repsDistribution = repBins.map(bin => {
-    const matchingSch = schExercises.filter(s => {
-      const avg = (s.exercise.repMin + s.exercise.repMax) / 2;
-      if (bin.min === 0 && avg === 0) return true;
-      return avg >= bin.min && avg <= bin.max;
-    });
+  let totalSetsRepSum = 0;
+  const binSetsMap = new Map<string, number>();
+  const binDistrictsMap = new Map<string, string[]>();
+  const binExercisesMap = new Map<string, string[]>();
 
-    const sets = matchingSch.reduce((sum, s) => sum + s.exercise.serie, 0);
-    const districts = Array.from(new Set(matchingSch.map(s => s.exercise.distrettoMuscolare))).slice(0, 3);
-    const exercises = Array.from(new Set(matchingSch.map(s => s.exercise.nome))).slice(0, 3);
+  repBins.forEach(bin => {
+    binSetsMap.set(bin.label, 0);
+    binDistrictsMap.set(bin.label, []);
+    binExercisesMap.set(bin.label, []);
+  });
+
+  schExercises.forEach(s => {
+    const resolved = resolveWorkoutExerciseData(s.exercise, dbExercises);
+    const sets = getExerciseSets(s.exercise, dbExercises);
+    sets.forEach(set => {
+      totalSetsRepSum++;
+      const avg = set.reps;
+      
+      repBins.forEach(bin => {
+        const matchesBin = (bin.min === 0 && avg === 0) || (avg >= bin.min && avg <= bin.max);
+        if (matchesBin) {
+          binSetsMap.set(bin.label, binSetsMap.get(bin.label)! + 1);
+          
+          const districts = binDistrictsMap.get(bin.label)!;
+          if (!districts.includes(resolved.distrettoMuscolare)) {
+            districts.push(resolved.distrettoMuscolare);
+          }
+          
+          const exercises = binExercisesMap.get(bin.label)!;
+          if (!exercises.includes(s.exercise.nome)) {
+            exercises.push(s.exercise.nome);
+          }
+        }
+      });
+    });
+  });
+
+  res.repsDistribution = repBins.map(bin => {
+    const sets = binSetsMap.get(bin.label) || 0;
+    const districts = (binDistrictsMap.get(bin.label) || []).slice(0, 3);
+    const exercises = (binExercisesMap.get(bin.label) || []).slice(0, 3);
 
     return {
       range: bin.label,
@@ -951,11 +1264,71 @@ export function runFullAnalysis(
     'Top set', 'Back-off', 'Drop set', 'Rest pause', 'Myo-reps', 'Cluster set', 'Superset', 'Triset', 'Giant set', 'Jumpset', 'Circuito', 'Cedimento'
   ];
   const totalExs = schExercises.length;
+  
+  const techExercisesCount = new Map<string, number>();
+  const techSetsCount = new Map<string, number>();
+  const techDistricts = new Map<string, string[]>();
+
+  techList.forEach(t => {
+    techExercisesCount.set(t.toLowerCase(), 0);
+    techSetsCount.set(t.toLowerCase(), 0);
+    techDistricts.set(t.toLowerCase(), []);
+  });
+
+  schExercises.forEach(s => {
+    const resolved = resolveWorkoutExerciseData(s.exercise, dbExercises);
+    const exTech = s.exercise.tecnicaIntensita?.toLowerCase();
+    
+    if (s.exercise.blocks && s.exercise.blocks.length > 0) {
+      s.exercise.blocks.forEach(b => {
+        const bTech = b.tecnicaIntensita?.toLowerCase();
+        if (bTech) {
+          techList.forEach(tech => {
+            if (bTech === tech.toLowerCase()) {
+              techSetsCount.set(tech.toLowerCase(), techSetsCount.get(tech.toLowerCase())! + b.serie);
+              
+              const dists = techDistricts.get(tech.toLowerCase())!;
+              if (!dists.includes(resolved.distrettoMuscolare)) {
+                dists.push(resolved.distrettoMuscolare);
+              }
+            }
+          });
+        }
+      });
+      
+      if (exTech) {
+        techList.forEach(tech => {
+          if (exTech === tech.toLowerCase()) {
+            techExercisesCount.set(tech.toLowerCase(), techExercisesCount.get(tech.toLowerCase())! + 1);
+          }
+        });
+      }
+    } else {
+      if (exTech) {
+        techList.forEach(tech => {
+          if (exTech === tech.toLowerCase()) {
+            techExercisesCount.set(tech.toLowerCase(), techExercisesCount.get(tech.toLowerCase())! + 1);
+            techSetsCount.set(tech.toLowerCase(), techSetsCount.get(tech.toLowerCase())! + s.exercise.serie);
+            
+            const dists = techDistricts.get(tech.toLowerCase())!;
+            if (!dists.includes(resolved.distrettoMuscolare)) {
+              dists.push(resolved.distrettoMuscolare);
+            }
+          }
+        });
+      }
+    }
+  });
+
   res.intensityTechniques = techList.map(tech => {
-    const matches = schExercises.filter(s => s.exercise.tecnicaIntensita?.toLowerCase() === tech.toLowerCase());
-    const exercisesCount = matches.length;
-    const setsCount = matches.reduce((sum, s) => sum + s.exercise.serie, 0);
-    const districts = Array.from(new Set(matches.map(s => s.exercise.distrettoMuscolare)));
+    const lower = tech.toLowerCase();
+    let exercisesCount = techExercisesCount.get(lower) || 0;
+    const setsCount = techSetsCount.get(lower) || 0;
+    const districts = techDistricts.get(lower) || [];
+    
+    if (exercisesCount === 0 && setsCount > 0) {
+      exercisesCount = 1;
+    }
 
     return {
       technique: tech,
@@ -969,15 +1342,18 @@ export function runFullAnalysis(
   // 12. Workout Density
   res.density = uniqueDaysList.map(dName => {
     const sch = schExercises.filter(s => s.dayName === dName);
-    const sets = sch.reduce((sum, s) => sum + s.exercise.serie, 0);
-    const reps = sch.reduce((sum, s) => sum + (s.exercise.serie * ((s.exercise.repMin + s.exercise.repMax) / 2)), 0);
+    const sets = sch.reduce((sum, s) => sum + getExerciseSetsCount(s.exercise), 0);
+    const reps = sch.reduce((sum, s) => sum + getExerciseRepsCount(s.exercise), 0);
     
     let vol = 0;
     sch.forEach(s => {
-      vol += s.exercise.serie * ((s.exercise.repMin + s.exercise.repMax) / 2) * parseWeight(s.exercise.caricoPrevisto);
+      const exVol = getExerciseVolumeLoad(s.exercise);
+      if (exVol !== null) {
+        vol += exVol;
+      }
     });
 
-    const duration = estimateDayDuration({ id: 'any', nome: dName, esercizi: sch.map(s => s.exercise) }, settings) || 45;
+    const duration = estimateDayDuration({ id: 'any', nome: dName, esercizi: sch.map(s => s.exercise) }, settings, dbExercises) || 45;
 
     return {
       dayName: dName,
@@ -994,12 +1370,18 @@ export function runFullAnalysis(
     const matchingLogs = logEntries.filter(l => l.exerciseNome.toLowerCase() === exName.toLowerCase());
 
     const sample = matchingSch[0]?.exercise;
-    const distretto = sample ? sample.distrettoMuscolare : 'Pettorali';
+    const resolved = sample ? resolveWorkoutExerciseData(sample, dbExercises) : {
+      distrettoMuscolare: 'Pettorali' as DistrettoMuscolare,
+      distrettiSecondari: [] as string[],
+      modalitaConteggio: 'entrambi_i_lati' as const
+    };
+    
+    const distretto = resolved.distrettoMuscolare;
     const app = matchingSch.length;
     const activeWks = Array.from(new Set(matchingSch.map(s => s.weekIndex))).sort();
 
-    const scheduledSetsCount = matchingSch.reduce((sum, s) => sum + s.exercise.serie, 0);
-    const scheduledRepsCount = matchingSch.reduce((sum, s) => sum + s.exercise.serie * ((s.exercise.repMin + s.exercise.repMax) / 2), 0);
+    const scheduledSetsCount = matchingSch.reduce((sum, s) => sum + getExerciseSetsCount(s.exercise), 0);
+    const scheduledRepsCount = matchingSch.reduce((sum, s) => sum + getExerciseRepsCount(s.exercise), 0);
 
     // Carichi / RIR actual history
     let maxLoad = 0;
@@ -1011,12 +1393,9 @@ export function runFullAnalysis(
     const history = matchingLogs.map(l => {
       let lVol = 0;
       let lLoadMax = 0;
-      let lRepsTot = 0;
-      let lRirAvg = 0;
 
       l.sets.forEach(s => {
         lVol += s.repEffettive * s.carico;
-        lRepsTot += s.repEffettive;
         rirSumAct += s.rirEffettivo;
         actualSetsCount++;
         loadSum += s.carico;
@@ -1038,10 +1417,17 @@ export function runFullAnalysis(
     const avgLoad = actualSetsCount > 0 ? loadSum / actualSetsCount : 0;
     const rirMedio = actualSetsCount > 0 ? rirSumAct / actualSetsCount : 0;
 
-    // Ultima / Migliore
     const lastP = history[history.length - 1] ? `${history[history.length - 1].carico}${unit} x ${history[history.length - 1].reps}` : 'Nessuno';
     const bestSet = matchingLogs.flatMap(l => l.sets).sort((a, b) => b.carico - a.carico)[0];
     const bestP = bestSet ? `${bestSet.carico}${unit} x ${bestSet.repEffettive}` : 'Nessuno';
+
+    let exVolSch = 0;
+    let hasSchVol = true;
+    matchingSch.forEach(s => {
+      const v = getExerciseVolumeLoad(s.exercise);
+      if (v !== null) exVolSch += v;
+      else hasSchVol = false;
+    });
 
     return {
       id: sample ? sample.id : exName,
@@ -1053,7 +1439,7 @@ export function runFullAnalysis(
       repsTotali: scheduledRepsCount,
       caricoMedio: Math.round(avgLoad * 10) / 10,
       caricoMassimo: maxLoad,
-      volumeLoad: Math.round(volLoadTot),
+      volumeLoad: hasSchVol ? Math.round(exVolSch) : -1,
       rirMedio: Math.round(rirMedio * 10) / 10,
       frequenza: app / planWeeksCount,
       ultimaPrestazione: lastP,
@@ -1131,7 +1517,7 @@ export function runFullAnalysis(
   });
 
   // Check missing load warning
-  const missingLoadCount = schExercises.filter(s => !s.exercise.caricoPrevisto).length;
+  const missingLoadCount = schExercises.filter(s => !s.exercise.caricoPrevisto && (!s.exercise.blocks || s.exercise.blocks.some(b => !b.caricoPrevisto))).length;
   if (avv.carichiMancanti && missingLoadCount > 0) {
     res.alerts.push({
       id: 'missing_loads',
@@ -1166,6 +1552,7 @@ export function compareWeeksData(
   weekB: number,
   settings: AnalisiSettings
 ): ComparisonReport {
+  const dbExercises = getDatabaseExercises();
   const weeksList = plan.weeks || [];
   const weekObjA = weeksList.find(w => w.weekIndex === weekA);
   const weekObjB = weeksList.find(w => w.weekIndex === weekB);
@@ -1176,38 +1563,95 @@ export function compareWeeksData(
   const exsA = daysA.flatMap(d => d.esercizi);
   const exsB = daysB.flatMap(d => d.esercizi);
 
-  const setsA = exsA.reduce((sum, e) => sum + e.serie, 0);
-  const setsB = exsB.reduce((sum, e) => sum + e.serie, 0);
+  const setsA = exsA.reduce((sum, e) => sum + getExerciseSetsCount(e), 0);
+  const setsB = exsB.reduce((sum, e) => sum + getExerciseSetsCount(e), 0);
 
-  const repsA = exsA.reduce((sum, e) => sum + e.serie * ((e.repMin + e.repMax) / 2), 0);
-  const repsB = exsB.reduce((sum, e) => sum + e.serie * ((e.repMin + e.repMax) / 2), 0);
+  const repsA = exsA.reduce((sum, e) => sum + getExerciseRepsCount(e), 0);
+  const repsB = exsB.reduce((sum, e) => sum + getExerciseRepsCount(e), 0);
 
   let volA = 0;
-  exsA.forEach(e => { volA += e.serie * ((e.repMin + e.repMax) / 2) * parseWeight(e.caricoPrevisto); });
+  exsA.forEach(e => {
+    const v = getExerciseVolumeLoad(e);
+    if (v !== null) volA += v;
+  });
   let volB = 0;
-  exsB.forEach(e => { volB += e.serie * ((e.repMin + e.repMax) / 2) * parseWeight(e.caricoPrevisto); });
+  exsB.forEach(e => {
+    const v = getExerciseVolumeLoad(e);
+    if (v !== null) volB += v;
+  });
 
-  const rirA = exsA.length > 0 ? exsA.reduce((sum, e) => sum + e.rir, 0) / exsA.length : 0;
-  const rirB = exsB.length > 0 ? exsB.reduce((sum, e) => sum + e.rir, 0) / exsB.length : 0;
-
-  const durationA = daysA.reduce((sum, d) => sum + estimateDayDuration(d, settings), 0);
-  const durationB = daysB.reduce((sum, d) => sum + estimateDayDuration(d, settings), 0);
-
-  const namesA = exsA.map(e => e.nome);
-  const namesB = exsB.map(e => e.nome);
-
-  const added = namesB.filter(n => !namesA.includes(n));
-  const removed = namesA.filter(n => !namesB.includes(n));
-
-  // simple check for replacements: if we remove A and add B on the same day and sequence, count as replacement
-  const replaced: { oldEx: string; newEx: string }[] = [];
-  if (removed.length > 0 && added.length > 0) {
-    removed.forEach((oldEx, idx) => {
-      if (added[idx]) {
-        replaced.push({ oldEx, newEx: added[idx] });
-      }
+  const getWeekAvgRir = (exs: WorkoutExercise[]) => {
+    let rirSum = 0;
+    let rirCount = 0;
+    exs.forEach(e => {
+      const sets = getExerciseSets(e, dbExercises);
+      sets.forEach(set => {
+        if (set.rir !== undefined) {
+          rirSum += set.rir;
+          rirCount++;
+        }
+      });
     });
-  }
+    return rirCount > 0 ? rirSum / rirCount : 0;
+  };
+
+  const rirA = getWeekAvgRir(exsA);
+  const rirB = getWeekAvgRir(exsB);
+
+  const durationA = daysA.reduce((sum, d) => sum + estimateDayDuration(d, settings, dbExercises), 0);
+  const durationB = daysB.reduce((sum, d) => sum + estimateDayDuration(d, settings, dbExercises), 0);
+
+  // Precise row-matching based on programRowId and programDayId
+  const added: string[] = [];
+  const removed: string[] = [];
+  const replaced: { oldEx: string; newEx: string }[] = [];
+
+  const mapA = new Map<string, WorkoutExercise>();
+  exsA.forEach(ex => {
+    if (ex.programRowId) {
+      mapA.set(ex.programRowId, ex);
+    }
+  });
+
+  const mapB = new Map<string, WorkoutExercise>();
+  exsB.forEach(ex => {
+    if (ex.programRowId) {
+      mapB.set(ex.programRowId, ex);
+    }
+  });
+
+  // Check B against A (to find added or replaced)
+  exsB.forEach(exB => {
+    if (exB.programRowId) {
+      const exA = mapA.get(exB.programRowId);
+      if (!exA) {
+        added.push(exB.nome);
+      } else {
+        if (exA.nome.toLowerCase() !== exB.nome.toLowerCase()) {
+          replaced.push({ oldEx: exA.nome, newEx: exB.nome });
+        }
+      }
+    } else {
+      const existsInA = exsA.some(exA => exA.nome.toLowerCase() === exB.nome.toLowerCase());
+      if (!existsInA) {
+        added.push(exB.nome);
+      }
+    }
+  });
+
+  // Check A against B (to find removed)
+  exsA.forEach(exA => {
+    if (exA.programRowId) {
+      if (!mapB.has(exA.programRowId)) {
+        removed.push(exA.nome);
+      }
+    } else {
+      const existsInB = exsB.some(exB => exB.nome.toLowerCase() === exA.nome.toLowerCase());
+      if (!existsInB) {
+        removed.push(exA.nome);
+      }
+    }
+  });
 
   const getPercentDiff = (valA: number, valB: number) => {
     if (valA === 0) return valB === 0 ? '0%' : '+100%';
@@ -1224,8 +1668,8 @@ export function compareWeeksData(
       { label: 'RIR medio', valA: rirA.toFixed(1), valB: rirB.toFixed(1), diff: (rirB - rirA).toFixed(1), percentDiff: getPercentDiff(rirA, rirB) },
       { label: 'Durata totale stimata', valA: `${durationA} min`, valB: `${durationB} min`, diff: `${durationB - durationA} min`, percentDiff: getPercentDiff(durationA, durationB) }
     ],
-    addedExercises: added.filter(a => !replaced.map(r => r.newEx).includes(a)),
-    removedExercises: removed.filter(r => !replaced.map(rp => rp.oldEx).includes(r)),
+    addedExercises: added,
+    removedExercises: removed,
     replacedExercises: replaced
   };
 }
@@ -1235,20 +1679,21 @@ export function comparePlansData(
   planB: WorkoutPlan,
   settings: AnalisiSettings
 ): ComparisonReport {
+  const dbExercises = getDatabaseExercises();
   const daysA = planA.giornate || [];
   const daysB = planB.giornate || [];
 
   const exsA = daysA.flatMap(d => d.esercizi);
   const exsB = daysB.flatMap(d => d.esercizi);
 
-  const setsA = exsA.reduce((sum, e) => sum + e.serie, 0);
-  const setsB = exsB.reduce((sum, e) => sum + e.serie, 0);
+  const setsA = exsA.reduce((sum, e) => sum + getExerciseSetsCount(e), 0);
+  const setsB = exsB.reduce((sum, e) => sum + getExerciseSetsCount(e), 0);
 
-  const repsA = exsA.reduce((sum, e) => sum + e.serie * ((e.repMin + e.repMax) / 2), 0);
-  const repsB = exsB.reduce((sum, e) => sum + e.serie * ((e.repMin + e.repMax) / 2), 0);
+  const repsA = exsA.reduce((sum, e) => sum + getExerciseRepsCount(e), 0);
+  const repsB = exsB.reduce((sum, e) => sum + getExerciseRepsCount(e), 0);
 
-  const durationA = daysA.reduce((sum, d) => sum + estimateDayDuration(d, settings), 0);
-  const durationB = daysB.reduce((sum, d) => sum + estimateDayDuration(d, settings), 0);
+  const durationA = daysA.reduce((sum, d) => sum + estimateDayDuration(d, settings, dbExercises), 0);
+  const durationB = daysB.reduce((sum, d) => sum + estimateDayDuration(d, settings, dbExercises), 0);
 
   const getPercentDiff = (valA: number, valB: number) => {
     if (valA === 0) return valB === 0 ? '0%' : '+100%';

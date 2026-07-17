@@ -285,19 +285,35 @@ export default function PrintSheet({ config, plan, onClose }: PrintSheetProps) {
                                     return (
                                       <td key={w.weekIndex} className="py-2.5 text-center text-neutral-900 border-l border-neutral-200/50 font-medium">
                                         {targetEx ? (
-                                          <div className="flex flex-col items-center">
-                                            <span className="font-extrabold text-[11px]">
-                                              {targetEx.serie}s x {targetEx.repMin}-{targetEx.repMax}
-                                            </span>
-                                            <span className="text-[9px] text-neutral-500 font-semibold">
-                                              RIR {targetEx.rir}
-                                            </span>
-                                            {targetEx.caricoPrevisto && (
-                                              <span className="text-[9px] text-neutral-700 font-bold mt-0.5 bg-neutral-100 px-1 rounded">
-                                                {targetEx.caricoPrevisto}
+                                          targetEx.blocks && targetEx.blocks.length > 0 ? (
+                                            <div className="flex flex-col items-start gap-1 text-[9px] font-mono leading-tight px-1.5 py-0.5">
+                                              {targetEx.blocks.map((b, idx) => {
+                                                const label = b.nome || `Blocco ${idx + 1}`;
+                                                const repsRange = b.repMin === b.repMax ? b.repMin : `${b.repMin}–${b.repMax}`;
+                                                const rirStr = b.rir !== undefined ? `RIR ${b.rir}` : '';
+                                                const caricoStr = b.caricoPrevisto ? ` @ ${b.caricoPrevisto}` : '';
+                                                return (
+                                                  <div key={b.id || idx} className="text-left font-semibold text-neutral-800 whitespace-nowrap">
+                                                    {label} — {b.serie} × {repsRange} — {rirStr}{caricoStr}
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          ) : (
+                                            <div className="flex flex-col items-center">
+                                              <span className="font-extrabold text-[11px]">
+                                                {targetEx.serie}s x {targetEx.repMin}-{targetEx.repMax}
                                               </span>
-                                            )}
-                                          </div>
+                                              <span className="text-[9px] text-neutral-500 font-semibold">
+                                                RIR {targetEx.rir}
+                                              </span>
+                                              {targetEx.caricoPrevisto && (
+                                                <span className="text-[9px] text-neutral-700 font-bold mt-0.5 bg-neutral-100 px-1 rounded">
+                                                  {targetEx.caricoPrevisto}
+                                                </span>
+                                              )}
+                                            </div>
+                                          )
                                         ) : (
                                           <span className="text-neutral-350">-</span>
                                         )}
@@ -305,14 +321,32 @@ export default function PrintSheet({ config, plan, onClose }: PrintSheetProps) {
                                     );
                                   })
                                 ) : (
-                                  <>
-                                    <td className="py-2.5 text-center font-extrabold text-neutral-900">{ex.serie}</td>
-                                    <td className="py-2.5 text-center text-neutral-700 font-medium">{ex.repMin}-{ex.repMax}</td>
-                                    <td className="py-2.5 text-center text-neutral-700">RIR {ex.rir}</td>
-                                    <td className="py-2.5 text-right text-neutral-800 font-extrabold pr-1">
-                                      {ex.caricoPrevisto ? ex.caricoPrevisto : <span className="text-neutral-300 font-normal">_______</span>}
+                                  ex.blocks && ex.blocks.length > 0 ? (
+                                    <td colSpan={4} className="py-2.5 text-center">
+                                      <div className="flex flex-col items-center gap-1 text-[9px] font-mono leading-tight px-1.5 py-0.5">
+                                        {ex.blocks.map((b, idx) => {
+                                          const label = b.nome || `Blocco ${idx + 1}`;
+                                          const repsRange = b.repMin === b.repMax ? b.repMin : `${b.repMin}–${b.repMax}`;
+                                          const rirStr = b.rir !== undefined ? `RIR ${b.rir}` : '';
+                                          const caricoStr = b.caricoPrevisto ? ` @ ${b.caricoPrevisto}` : '';
+                                          return (
+                                            <div key={b.id || idx} className="text-left font-semibold text-neutral-800 whitespace-nowrap">
+                                              {label} — {b.serie} × {repsRange} — {rirStr}{caricoStr}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
                                     </td>
-                                  </>
+                                  ) : (
+                                    <>
+                                      <td className="py-2.5 text-center font-extrabold text-neutral-900">{ex.serie}</td>
+                                      <td className="py-2.5 text-center text-neutral-700 font-medium">{ex.repMin}-{ex.repMax}</td>
+                                      <td className="py-2.5 text-center text-neutral-700">RIR {ex.rir}</td>
+                                      <td className="py-2.5 text-right text-neutral-800 font-extrabold pr-1">
+                                        {ex.caricoPrevisto ? ex.caricoPrevisto : <span className="text-neutral-300 font-normal">_______</span>}
+                                      </td>
+                                    </>
+                                  )
                                 )}
                               </tr>
                             );

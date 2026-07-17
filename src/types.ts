@@ -107,6 +107,21 @@ export interface Exercise {
   modalitaConteggio?: 'entrambi_i_lati' | 'singolo_lato';
 }
 
+export interface WorkoutExerciseBlock {
+  id: string;
+  nome: string; // nome o etichetta
+  serie: number;
+  repMin: number;
+  repMax: number;
+  rir: number; // RIR
+  caricoPrevisto?: string;
+  tut?: string; // T.U.T.
+  recupero: number; // in seconds
+  tecnicaIntensita?: string; // tecnica di intensita
+  note?: string; // note
+  volumeMultiplier?: number; // volumeMultiplier facoltativo
+}
+
 export interface WorkoutExercise {
   id: string; // Unique instance ID in the workout plan
   exerciseId: string; // Reference to original exercise
@@ -131,12 +146,20 @@ export interface WorkoutExercise {
   groupId?: string;
   groupType?: 'Superset' | 'Triset' | 'Giant set' | 'Jumpset' | 'Circuito';
   groupRest?: number; // common rest after group
+  
+  // Stable ID across weeks for the same logical row
+  programRowId?: string;
+
+  // Structured blocks for custom sets (e.g. top set, back-off)
+  blocks?: WorkoutExerciseBlock[];
 }
 
 export interface WorkoutDay {
   id: string;
   nome: string;
   esercizi: WorkoutExercise[];
+  // Stable ID across weeks for the same logical day
+  programDayId?: string;
 }
 
 export interface WorkoutWeek {

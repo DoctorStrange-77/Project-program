@@ -7,7 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Client, CoachConfig, Exercise, WorkoutPlan, WorkoutDay, 
   WorkoutExercise, Sesso, LivelloEsperienza, DistrettoMuscolare, 
-  WorkoutTemplate, WorkoutWeek, WorkoutPlanStatus 
+  WorkoutTemplate, WorkoutWeek, WorkoutPlanStatus, WorkoutExerciseBlock 
 } from '../types';
 import { 
   User, Check, ChevronRight, ChevronLeft, Trash2, Copy, ArrowUp, ArrowDown, 
@@ -37,6 +37,129 @@ const DISTRICT_COLORS: { [key: string]: string } = {
   'Abduttori': '#fb7185',          // Rosa antico
   'Polpacci': '#22c55e',           // Verde mela
   'Addome': '#6366f1',             // Indaco
+};
+
+const migrateWeeks = (inputWeeks: WorkoutWeek[]): WorkoutWeek[] => {
+  if (!inputWeeks || inputWeeks.length === 0) return inputWeeks;
+  
+  // 1. Deep clone to avoid mutating input directly
+  const weeksCopy: WorkoutWeek[] = JSON.parse(JSON.stringify(inputWeeks));
+  
+  // 2. Ensure programDayId is set for all days by index across weeks
+  const maxDays = Math.max(...weeksCopy.map(w => w.giornate.length), 0);
+  for (let dIdx = 0; dIdx < maxDays; dIdx++) {
+    let existingDayId: string | undefined;
+    for (const w of weeksCopy) {
+      if (w.giornate[dIdx]?.programDayId) {
+        existingDayId = w.giornate[dIdx].programDayId;
+        break;
+      }
+    }
+    const dayIdToUse = existingDayId || ('pd_' + Math.random().toString(36).substr(2, 5));
+    for (const w of weeksCopy) {
+      if (w.giornate[dIdx]) {
+        w.giornate[dIdx].programDayId = dayIdToUse;
+      }
+    }
+  }
+
+  // Check if any exercise in any week lacks programRowId
+  const needsMigration = weeksCopy.some(w => 
+    w.giornate.some(d => 
+      d.esercizi.some(ex => !ex.programRowId)
+    )
+  );
+  
+  if (!needsMigration) {
+    return weeksCopy;
+  }
+  
+  // Let's perform the migration using the first week as reference
+  const firstWeek = weeksCopy[0];
+  
+  // Step 1: Assign stable row IDs to all exercises in week 1
+  firstWeek.giornate.forEach(day => {
+    day.esercizi.forEach((ex) => {
+      if (!ex.programRowId) {
+        ex.programRowId = 'pr_' + Math.random().toString(36).substr(2, 5);
+      }
+    });
+  });
+  
+  // Step 2: Match exercises in other weeks
+  for (let wIdx = 1; wIdx < weeksCopy.length; wIdx++) {
+    const currentWeek = weeksCopy[wIdx];
+    
+    // For each day in the current week, find matching day in first week
+    currentWeek.giornate.forEach((currDay) => {
+      const refDay = firstWeek.giornate.find(d => d.programDayId === currDay.programDayId);
+      if (!refDay) {
+        // If there's no corresponding reference day, just generate new row IDs for all exercises in this day
+        currDay.esercizi.forEach(ex => {
+          if (!ex.programRowId) {
+            ex.programRowId = 'pr_' + Math.random().toString(36).substr(2, 5);
+          }
+        });
+        return;
+      }
+      
+      // We will keep track of which reference exercises from refDay have been mapped/paired with an exercise in currDay
+      const pairedRefRowIds = new Set<string>();
+      // We also keep track of which currDay exercises got a programRowId during matching
+      const pairedCurrIndices = new Set<number>();
+      
+      // First pass: Match exact same name at exact same index
+      currDay.esercizi.forEach((currEx, currExIdx) => {
+        if (currEx.programRowId) {
+          pairedCurrIndices.add(currExIdx);
+          pairedRefRowIds.add(currEx.programRowId);
+          return;
+        }
+        const refEx = refDay.esercizi[currExIdx];
+        if (refEx && refEx.nome === currEx.nome && !pairedRefRowIds.has(refEx.programRowId!)) {
+          currEx.programRowId = refEx.programRowId;
+          pairedRefRowIds.add(refEx.programRowId!);
+          pairedCurrIndices.add(currExIdx);
+        }
+      });
+      
+      // Second pass: Match same name at any other index
+      currDay.esercizi.forEach((currEx, currExIdx) => {
+        if (pairedCurrIndices.has(currExIdx)) return;
+        
+        // Find an unmatched refEx with the same name
+        const matchRefEx = refDay.esercizi.find(rEx => 
+          rEx.nome === currEx.nome && !pairedRefRowIds.has(rEx.programRowId!)
+        );
+        if (matchRefEx) {
+          currEx.programRowId = matchRefEx.programRowId;
+          pairedRefRowIds.add(matchRefEx.programRowId!);
+          pairedCurrIndices.add(currExIdx);
+        }
+      });
+      
+      // Third pass: Match same original index fallback (even if name is different)
+      currDay.esercizi.forEach((currEx, currExIdx) => {
+        if (pairedCurrIndices.has(currExIdx)) return;
+        
+        const refEx = refDay.esercizi[currExIdx];
+        if (refEx && !pairedRefRowIds.has(refEx.programRowId!)) {
+          currEx.programRowId = refEx.programRowId;
+          pairedRefRowIds.add(refEx.programRowId!);
+          pairedCurrIndices.add(currExIdx);
+        }
+      });
+      
+      // Fourth pass: For any remaining unmatched exercises, assign a fresh programRowId
+      currDay.esercizi.forEach((currEx) => {
+        if (!currEx.programRowId) {
+          currEx.programRowId = 'pr_' + Math.random().toString(36).substr(2, 5);
+        }
+      });
+    });
+  }
+  
+  return weeksCopy;
 };
 
 interface WorkoutWizardProps {
@@ -120,6 +243,21 @@ export default function WorkoutWizard({
   const [copyTargetWeek, setCopyTargetWeek] = useState<number>(1);
   const [copyTargetDayIdx, setCopyTargetDayIdx] = useState<number>(0);
   const [activeActionMenuExId, setActiveActionMenuExId] = useState<string | null>(null);
+  
+  // Custom delete exercise configuration state
+  const [deleteExConfig, setDeleteExConfig] = useState<{
+    dayId: string;
+    exInstId: string;
+    exNome: string;
+  } | null>(null);
+
+  // Structured blocks manager configuration state
+  const [blocksManagerConfig, setBlocksManagerConfig] = useState<{
+    dayId: string;
+    exId: string;
+  } | null>(null);
+  const [activeBlocks, setActiveBlocks] = useState<WorkoutExerciseBlock[]>([]);
+  const [blocksSuccessMsg, setBlocksSuccessMsg] = useState<string | null>(null);
 
   // Analytics panel state
   const [showAnalytics, setShowAnalytics] = useState(false);
@@ -177,6 +315,20 @@ export default function WorkoutWizard({
       window.removeEventListener('popstate', handlePopState);
     };
   }, [showTemplateModal]);
+
+  // Automatic data migration for stable identifiers (programDayId & programRowId)
+  useEffect(() => {
+    if (weeks && weeks.length > 0) {
+      const needsMigration = weeks.some(w => 
+        w.giornate.some(d => 
+          !d.programDayId || d.esercizi.some(ex => !ex.programRowId)
+        )
+      );
+      if (needsMigration) {
+        setWeeks(prevWeeks => migrateWeeks(prevWeeks));
+      }
+    }
+  }, [weeks]);
 
   // Autosave during workout creation
   useEffect(() => {
@@ -522,10 +674,12 @@ export default function WorkoutWizard({
     const clonedDay: WorkoutDay = {
       ...targetDay,
       id: 'day_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+      programDayId: 'pd_' + Math.random().toString(36).substr(2, 5),
       nome: `${targetDay.nome} (Copia)`,
       esercizi: targetDay.esercizi.map(ex => ({
         ...ex,
-        id: 'we_inst_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)
+        id: 'we_inst_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+        programRowId: 'pr_' + Math.random().toString(36).substr(2, 5)
       }))
     };
     setGiornate(prev => [...prev, clonedDay]);
@@ -557,27 +711,28 @@ export default function WorkoutWizard({
     if (globalModifications) {
       const targetWeekObj = weeks.find(w => w.weekIndex === weekIdx);
       const currentDay = targetWeekObj?.giornate.find(d => d.id === dayId);
-      const currentDayIdx = targetWeekObj?.giornate.findIndex(d => d.id === dayId) ?? -1;
-      const currentExIdx = currentDay?.esercizi.findIndex(ex => ex.id === exInstId) ?? -1;
-      const currentEx = currentDay?.esercizi[currentExIdx];
+      const currentEx = currentDay?.esercizi.find(ex => ex.id === exInstId);
 
-      if (currentDayIdx !== -1 && currentExIdx !== -1 && currentEx) {
+      if (currentDay && currentEx) {
         setWeeks(prevWeeks => prevWeeks.map(w => {
           if (w.weekIndex === weekIdx) return w;
           
-          const targetDayObj = w.giornate[currentDayIdx];
-          if (!targetDayObj) return w;
-
-          const updatedEsercizi = targetDayObj.esercizi.map((ex, idx) => {
-            if (idx === currentExIdx && ex.nome === currentEx.nome) {
-              return { ...ex, [field]: value };
-            }
-            return ex;
-          });
-
           return {
             ...w,
-            giornate: w.giornate.map((d, dIdx) => dIdx === currentDayIdx ? { ...d, esercizi: updatedEsercizi } : d)
+            giornate: w.giornate.map(d => {
+              if (d.programDayId === currentDay.programDayId) {
+                return {
+                  ...d,
+                  esercizi: d.esercizi.map(ex => {
+                    if (ex.programRowId === currentEx.programRowId) {
+                      return { ...ex, [field]: value };
+                    }
+                    return ex;
+                  })
+                };
+              }
+              return d;
+            })
           };
         }));
       }
@@ -597,8 +752,10 @@ export default function WorkoutWizard({
   const handleSelectExercise = (ex: Exercise) => {
     if (!targetDayId) return;
 
-    const newWorkoutEx: WorkoutExercise = {
-      id: 'we_inst_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+    const rowId = 'pr_' + Math.random().toString(36).substr(2, 5);
+
+    const createWorkoutEx = (customId?: string): WorkoutExercise => ({
+      id: customId || ('we_inst_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)),
       exerciseId: ex.id,
       nome: ex.nome,
       distrettoMuscolare: ex.distrettoMuscolare,
@@ -610,18 +767,55 @@ export default function WorkoutWizard({
       tut: '3-0-1-0',
       noteTecniche: '',
       tecnicaIntensita: 'Nessuna',
-      caricoPrevisto: ''
-    };
+      caricoPrevisto: '',
+      programRowId: rowId
+    });
 
-    setGiornate(prev => prev.map(day => {
-      if (day.id === targetDayId) {
+    const newWorkoutEx = createWorkoutEx();
+
+    // 1. Add to current week
+    setWeeks(prevWeeks => prevWeeks.map(w => {
+      if (w.weekIndex === activeWeekIndex) {
         return {
-          ...day,
-          esercizi: [...day.esercizi, newWorkoutEx]
+          ...w,
+          giornate: w.giornate.map(day => {
+            if (day.id === targetDayId) {
+              return {
+                ...day,
+                esercizi: [...day.esercizi, newWorkoutEx]
+              };
+            }
+            return day;
+          })
         };
       }
-      return day;
+      return w;
     }));
+
+    // 2. Propagate to other weeks if globalModifications is active
+    if (globalModifications) {
+      const activeWeekObj = weeks.find(w => w.weekIndex === activeWeekIndex);
+      const activeDay = activeWeekObj?.giornate.find(d => d.id === targetDayId);
+      if (activeDay) {
+        setWeeks(prevWeeks => prevWeeks.map(w => {
+          if (w.weekIndex === activeWeekIndex) return w;
+          return {
+            ...w,
+            giornate: w.giornate.map(day => {
+              if (day.programDayId === activeDay.programDayId) {
+                // Generate a unique instance ID, but keep the same programRowId!
+                const specificEx = createWorkoutEx('we_inst_' + Date.now() + '_' + w.weekIndex + '_' + Math.random().toString(36).substr(2, 5));
+                return {
+                  ...day,
+                  esercizi: [...day.esercizi, specificEx]
+                };
+              }
+              return day;
+            })
+          };
+        }));
+      }
+    }
 
     setIsExerciseModalOpen(false);
     setTargetDayId(null);
@@ -650,91 +844,412 @@ export default function WorkoutWizard({
 
     // 2. If global modifications is active, propagate to all other weeks!
     if (globalModifications) {
-      // Find current day and current exercise position & name
       const currentWeekObj = weeks.find(w => w.weekIndex === activeWeekIndex);
       const currentDay = currentWeekObj?.giornate.find(d => d.id === dayId);
-      const currentDayIdx = currentWeekObj?.giornate.findIndex(d => d.id === dayId) ?? -1;
-      const currentExIdx = currentDay?.esercizi.findIndex(ex => ex.id === exInstId) ?? -1;
-      const currentEx = currentDay?.esercizi[currentExIdx];
+      const currentEx = currentDay?.esercizi.find(ex => ex.id === exInstId);
 
-      if (currentDayIdx !== -1 && currentExIdx !== -1 && currentEx) {
+      if (currentDay && currentEx) {
         setWeeks(prevWeeks => prevWeeks.map(w => {
           if (w.weekIndex === activeWeekIndex) return w; // Already updated above
           
-          const targetDayObj = w.giornate[currentDayIdx];
-          if (!targetDayObj) return w;
-
-          const updatedEsercizi = targetDayObj.esercizi.map((ex, idx) => {
-            if (idx === currentExIdx && ex.nome === currentEx.nome) {
-              return { ...ex, [field]: value };
-            }
-            return ex;
-          });
-
           return {
             ...w,
-            giornate: w.giornate.map((d, dIdx) => dIdx === currentDayIdx ? { ...d, esercizi: updatedEsercizi } : d)
+            giornate: w.giornate.map(d => {
+              if (d.programDayId === currentDay.programDayId) {
+                return {
+                  ...d,
+                  esercizi: d.esercizi.map(ex => {
+                    if (ex.programRowId === currentEx.programRowId) {
+                      return { ...ex, [field]: value };
+                    }
+                    return ex;
+                  })
+                };
+              }
+              return d;
+            })
           };
         }));
       }
     }
   };
 
-  // Delete exercise from day
+  // Delete exercise from day (triggers custom popup confirmation)
   const handleDeleteEx = (dayId: string, exInstId: string) => {
-    setGiornate(prev => prev.map(day => {
-      if (day.id === dayId) {
+    const currentWeekObj = weeks.find(w => w.weekIndex === activeWeekIndex);
+    const day = currentWeekObj?.giornate.find(d => d.id === dayId);
+    const ex = day?.esercizi.find(e => e.id === exInstId);
+    if (!day || !ex) return;
+
+    setDeleteExConfig({
+      dayId,
+      exInstId,
+      exNome: ex.nome
+    });
+  };
+
+  const handleOpenBlocksManager = (dayId: string, exId: string) => {
+    const currentWeekObj = weeks.find(w => w.weekIndex === activeWeekIndex);
+    const dayObj = currentWeekObj?.giornate.find(d => d.id === dayId);
+    const exObj = dayObj?.esercizi.find(ex => ex.id === exId);
+    if (!exObj) return;
+
+    setBlocksManagerConfig({ dayId, exId });
+    if (exObj.blocks && exObj.blocks.length > 0) {
+      setActiveBlocks(JSON.parse(JSON.stringify(exObj.blocks)));
+    } else {
+      setActiveBlocks([]);
+    }
+  };
+
+  const handleConvertToBlocks = () => {
+    if (!blocksManagerConfig) return;
+    const { dayId, exId } = blocksManagerConfig;
+    const currentWeekObj = weeks.find(w => w.weekIndex === activeWeekIndex);
+    const dayObj = currentWeekObj?.giornate.find(d => d.id === dayId);
+    const exObj = dayObj?.esercizi.find(ex => ex.id === exId);
+    if (!exObj) return;
+
+    const initialBlock: WorkoutExerciseBlock = {
+      id: 'b_' + Math.random().toString(36).substr(2, 5),
+      nome: 'Blocco 1',
+      serie: exObj.serie || 3,
+      repMin: exObj.repMin || 8,
+      repMax: exObj.repMax || 12,
+      rir: exObj.rir !== undefined ? exObj.rir : 2,
+      recupero: exObj.recupero || 90,
+      tut: exObj.tut || '3-0-1-0',
+      tecnicaIntensita: exObj.tecnicaIntensita || 'Nessuna',
+      note: exObj.noteTecniche || ''
+    };
+    setActiveBlocks([initialBlock]);
+  };
+
+  const handleCreateEmptyBlock = () => {
+    const initialBlock: WorkoutExerciseBlock = {
+      id: 'b_' + Math.random().toString(36).substr(2, 5),
+      nome: 'Blocco 1',
+      serie: 3,
+      repMin: 8,
+      repMax: 12,
+      rir: 2,
+      recupero: 90,
+      tut: '3-0-1-0',
+      tecnicaIntensita: 'Nessuna',
+      note: ''
+    };
+    setActiveBlocks([initialBlock]);
+  };
+
+  const handleAddBlock = () => {
+    const newBlock: WorkoutExerciseBlock = {
+      id: 'b_' + Math.random().toString(36).substr(2, 5),
+      nome: `Blocco ${activeBlocks.length + 1}`,
+      serie: 3,
+      repMin: 8,
+      repMax: 12,
+      rir: 2,
+      recupero: 90,
+      tut: '3-0-1-0',
+      tecnicaIntensita: 'Nessuna',
+      note: ''
+    };
+    setActiveBlocks([...activeBlocks, newBlock]);
+  };
+
+  const handleUpdateBlockField = (blockId: string, field: keyof WorkoutExerciseBlock, value: any) => {
+    setActiveBlocks(prev => prev.map(b => b.id === blockId ? { ...b, [field]: value } : b));
+  };
+
+  const handleDuplicateBlock = (block: WorkoutExerciseBlock) => {
+    const dup: WorkoutExerciseBlock = {
+      ...block,
+      id: 'b_' + Math.random().toString(36).substr(2, 5),
+      nome: `${block.nome} (Copia)`
+    };
+    const idx = activeBlocks.findIndex(b => b.id === block.id);
+    if (idx !== -1) {
+      const updated = [...activeBlocks];
+      updated.splice(idx + 1, 0, dup);
+      setActiveBlocks(updated);
+    } else {
+      setActiveBlocks([...activeBlocks, dup]);
+    }
+  };
+
+  const handleMoveBlock = (idx: number, direction: 'up' | 'down') => {
+    if (direction === 'up' && idx === 0) return;
+    if (direction === 'down' && idx === activeBlocks.length - 1) return;
+    const updated = [...activeBlocks];
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    const temp = updated[idx];
+    updated[idx] = updated[targetIdx];
+    updated[targetIdx] = temp;
+    setActiveBlocks(updated);
+  };
+
+  const handleDeleteBlock = (blockId: string) => {
+    setActiveBlocks(prev => prev.filter(b => b.id !== blockId));
+  };
+
+  const handleCopyBlocksToNextWeek = () => {
+    if (!blocksManagerConfig) return;
+    const { dayId, exId } = blocksManagerConfig;
+    const currentWeekObj = weeks.find(w => w.weekIndex === activeWeekIndex);
+    const dayObj = currentWeekObj?.giornate.find(d => d.id === dayId);
+    const exObj = dayObj?.esercizi.find(ex => ex.id === exId);
+    if (!exObj) return;
+
+    const nextWeekIdx = activeWeekIndex + 1;
+    const nextWeekObj = weeks.find(w => w.weekIndex === nextWeekIdx);
+    if (!nextWeekObj) {
+      alert(`La settimana ${nextWeekIdx} non esiste.`);
+      return;
+    }
+
+    setWeeks(prevWeeks => prevWeeks.map(w => {
+      if (w.weekIndex === nextWeekIdx) {
         return {
-          ...day,
-          esercizi: day.esercizi.filter(ex => ex.id !== exInstId)
+          ...w,
+          giornate: w.giornate.map(d => ({
+            ...d,
+            esercizi: d.esercizi.map(e => {
+              if (e.programRowId === exObj.programRowId) {
+                const totalSets = activeBlocks.reduce((sum, b) => sum + Number(b.serie || 0), 0);
+                return {
+                  ...e,
+                  blocks: JSON.parse(JSON.stringify(activeBlocks)),
+                  serie: totalSets
+                };
+              }
+              return e;
+            })
+          }))
         };
       }
-      return day;
+      return w;
     }));
+
+    setBlocksSuccessMsg(`Blocchi copiati nella Settimana ${nextWeekIdx}!`);
+    setTimeout(() => setBlocksSuccessMsg(null), 3000);
+  };
+
+  const handleApplyBlocksToAllWeeks = () => {
+    if (!blocksManagerConfig) return;
+    const { dayId, exId } = blocksManagerConfig;
+    const currentWeekObj = weeks.find(w => w.weekIndex === activeWeekIndex);
+    const dayObj = currentWeekObj?.giornate.find(d => d.id === dayId);
+    const exObj = dayObj?.esercizi.find(ex => ex.id === exId);
+    if (!exObj) return;
+
+    setWeeks(prevWeeks => prevWeeks.map(w => {
+      return {
+        ...w,
+        giornate: w.giornate.map(d => ({
+          ...d,
+          esercizi: d.esercizi.map(e => {
+            if (e.programRowId === exObj.programRowId) {
+              const totalSets = activeBlocks.reduce((sum, b) => sum + Number(b.serie || 0), 0);
+              return {
+                ...e,
+                blocks: JSON.parse(JSON.stringify(activeBlocks)),
+                serie: totalSets
+              };
+            }
+            return e;
+          })
+        }))
+      };
+    }));
+
+    setBlocksSuccessMsg("Blocchi applicati a tutte le settimane del programma!");
+    setTimeout(() => setBlocksSuccessMsg(null), 3000);
+  };
+
+  const handleSaveBlocks = () => {
+    if (!blocksManagerConfig) return;
+    const { dayId, exId } = blocksManagerConfig;
+
+    setWeeks(prevWeeks => prevWeeks.map(w => {
+      if (w.weekIndex === activeWeekIndex) {
+        return {
+          ...w,
+          giornate: w.giornate.map(d => {
+            if (d.id === dayId) {
+              return {
+                ...d,
+                esercizi: d.esercizi.map(e => {
+                  if (e.id === exId) {
+                    const totalSets = activeBlocks.reduce((sum, b) => sum + Number(b.serie || 0), 0);
+                    return {
+                      ...e,
+                      blocks: activeBlocks.length > 0 ? activeBlocks : undefined,
+                      serie: activeBlocks.length > 0 ? totalSets : e.serie
+                    };
+                  }
+                  return e;
+                })
+              };
+            }
+            return d;
+          })
+        };
+      }
+      return w;
+    }));
+
+    setBlocksManagerConfig(null);
+  };
+
+  const performDeleteExThisWeekOnly = () => {
+    if (!deleteExConfig) return;
+    const { dayId, exInstId } = deleteExConfig;
+    setWeeks(prevWeeks => prevWeeks.map(w => {
+      if (w.weekIndex === activeWeekIndex) {
+        return {
+          ...w,
+          giornate: w.giornate.map(day => {
+            if (day.id === dayId) {
+              return {
+                ...day,
+                esercizi: day.esercizi.filter(ex => ex.id !== exInstId)
+              };
+            }
+            return day;
+          })
+        };
+      }
+      return w;
+    }));
+    setDeleteExConfig(null);
+  };
+
+  const performDeleteExAllWeeks = () => {
+    if (!deleteExConfig) return;
+    const { dayId, exInstId } = deleteExConfig;
+    
+    // Find the programRowId first
+    const currentWeekObj = weeks.find(w => w.weekIndex === activeWeekIndex);
+    const dayObj = currentWeekObj?.giornate.find(d => d.id === dayId);
+    const exObj = dayObj?.esercizi.find(ex => ex.id === exInstId);
+    if (!dayObj || !exObj) {
+      setDeleteExConfig(null);
+      return;
+    }
+    const rowId = exObj.programRowId;
+    const pDayId = dayObj.programDayId;
+
+    setWeeks(prevWeeks => prevWeeks.map(w => {
+      return {
+        ...w,
+        giornate: w.giornate.map(d => {
+          if (d.id === dayId || d.programDayId === pDayId) {
+            return {
+              ...d,
+              esercizi: d.esercizi.filter(ex => ex.programRowId !== rowId)
+            };
+          }
+          return d;
+        })
+      };
+    }));
+    setDeleteExConfig(null);
   };
 
   // Duplicate exercise inside same day
   const handleDuplicateEx = (dayId: string, ex: WorkoutExercise) => {
+    const newRowId = 'pr_' + Math.random().toString(36).substr(2, 5);
     const duplicated: WorkoutExercise = {
       ...ex,
       id: 'we_inst_dup_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+      programRowId: newRowId
     };
 
-    setGiornate(prev => prev.map(day => {
-      if (day.id === dayId) {
-        const idx = day.esercizi.findIndex(item => item.id === ex.id);
-        const copyList = [...day.esercizi];
-        copyList.splice(idx + 1, 0, duplicated);
+    // 1. Update in active week
+    setWeeks(prevWeeks => prevWeeks.map(w => {
+      if (w.weekIndex === activeWeekIndex) {
         return {
-          ...day,
-          esercizi: copyList
+          ...w,
+          giornate: w.giornate.map(day => {
+            if (day.id === dayId) {
+              const idx = day.esercizi.findIndex(item => item.id === ex.id);
+              const copyList = [...day.esercizi];
+              copyList.splice(idx + 1, 0, duplicated);
+              return {
+                ...day,
+                esercizi: copyList
+              };
+            }
+            return day;
+          })
         };
       }
-      return day;
+      return w;
     }));
+
+    // 2. Propagate to all weeks if globalModifications is active
+    if (globalModifications) {
+      const activeWeekObj = weeks.find(w => w.weekIndex === activeWeekIndex);
+      const activeDay = activeWeekObj?.giornate.find(d => d.id === dayId);
+      if (activeDay) {
+        setWeeks(prevWeeks => prevWeeks.map(w => {
+          if (w.weekIndex === activeWeekIndex) return w;
+          return {
+            ...w,
+            giornate: w.giornate.map(day => {
+              if (day.programDayId === activeDay.programDayId) {
+                // Find where the reference exercise (ex.programRowId) is in this week
+                const idx = day.esercizi.findIndex(item => item.programRowId === ex.programRowId);
+                if (idx !== -1) {
+                  const specificDup: WorkoutExercise = {
+                    ...day.esercizi[idx],
+                    id: 'we_inst_dup_' + Date.now() + '_' + w.weekIndex + '_' + Math.random().toString(36).substr(2, 5),
+                    programRowId: newRowId
+                  };
+                  const copyList = [...day.esercizi];
+                  copyList.splice(idx + 1, 0, specificDup);
+                  return {
+                    ...day,
+                    esercizi: copyList
+                  };
+                }
+              }
+              return day;
+            })
+          };
+        }));
+      }
+    }
   };
 
-  // Move exercise up or down in the same day
+  // Move exercise up or down in the same day (moves the logical row across all weeks)
   const handleMoveEx = (dayId: string, exInstId: string, direction: 'up' | 'down') => {
-    setGiornate(prev => prev.map(day => {
-      if (day.id === dayId) {
-        const idx = day.esercizi.findIndex(ex => ex.id === exInstId);
-        if (idx === -1) return day;
-        if (direction === 'up' && idx === 0) return day;
-        if (direction === 'down' && idx === day.esercizi.length - 1) return day;
+    const currentWeekObj = weeks.find(w => w.weekIndex === activeWeekIndex);
+    const currentDay = currentWeekObj?.giornate.find(d => d.id === dayId);
+    const currentEx = currentDay?.esercizi.find(ex => ex.id === exInstId);
+    
+    if (!currentDay || !currentEx) return;
+    const rowId = currentEx.programRowId;
 
-        const updated = [...day.esercizi];
-        const swapTarget = direction === 'up' ? idx - 1 : idx + 1;
-        const temp = updated[idx];
-        updated[idx] = updated[swapTarget];
-        updated[swapTarget] = temp;
+    setWeeks(prevWeeks => prevWeeks.map(w => {
+      const targetDay = w.giornate.find(d => d.id === dayId || d.programDayId === currentDay.programDayId);
+      if (!targetDay) return w;
 
-        return {
-          ...day,
-          esercizi: updated
-        };
-      }
-      return day;
+      const idx = targetDay.esercizi.findIndex(ex => ex.programRowId === rowId);
+      if (idx === -1) return w;
+      if (direction === 'up' && idx === 0) return w;
+      if (direction === 'down' && idx === targetDay.esercizi.length - 1) return w;
+
+      const updated = [...targetDay.esercizi];
+      const swapTarget = direction === 'up' ? idx - 1 : idx + 1;
+      const temp = updated[idx];
+      updated[idx] = updated[swapTarget];
+      updated[swapTarget] = temp;
+
+      return {
+        ...w,
+        giornate: w.giornate.map(d => d.id === targetDay.id ? { ...d, esercizi: updated } : d)
+      };
     }));
   };
 
@@ -867,7 +1382,8 @@ export default function WorkoutWizard({
     const performCopy = () => {
       const clonedExercises = sourceDay.esercizi.map(ex => ({
         ...ex,
-        id: 'we_inst_copied_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5)
+        id: 'we_inst_copied_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+        programRowId: 'pr_' + Math.random().toString(36).substr(2, 5)
       }));
 
       setGiornate(prev => prev.map(day => {
@@ -1130,6 +1646,14 @@ export default function WorkoutWizard({
   });
 
   const selectedClientDetails = clients.find(c => c.id === selectedClientId);
+
+  const blocksEx = (() => {
+    if (!blocksManagerConfig) return null;
+    const { dayId, exId } = blocksManagerConfig;
+    const currentWeekObj = weeks.find(w => w.weekIndex === activeWeekIndex);
+    const dayObj = currentWeekObj?.giornate.find(d => d.id === dayId);
+    return dayObj?.esercizi.find(ex => ex.id === exId) || null;
+  })();
 
   return (
     <div id="workout-wizard-view" className="space-y-6">
@@ -1608,7 +2132,12 @@ export default function WorkoutWizard({
               <div className="grid grid-cols-3 sm:grid-cols-6 lg:grid-cols-12 gap-2">
                 {weeks.map((w) => {
                   const weekExsCount = w.giornate.reduce((sum, d) => sum + d.esercizi.length, 0);
-                  const weekSetsCount = w.giornate.reduce((sum, d) => sum + d.esercizi.reduce((acc, ex) => acc + Number(ex.serie || 0), 0), 0);
+                  const weekSetsCount = w.giornate.reduce((sum, d) => sum + d.esercizi.reduce((acc, ex) => {
+                    const sets = ex.blocks && ex.blocks.length > 0
+                      ? ex.blocks.reduce((bSum, b) => bSum + Number(b.serie || 0), 0)
+                      : Number(ex.serie || 0);
+                    return acc + sets;
+                  }, 0), 0);
                   const isActive = activeWeekIndex === w.weekIndex;
                   return (
                     <button
@@ -1875,7 +2404,12 @@ export default function WorkoutWizard({
                     <div className="flex items-center gap-1.5 px-2 py-1 bg-black/40 border border-white/5 rounded-lg text-[10px] font-mono text-white/50">
                       <span>{day.esercizi.length} es.</span>
                       <span className="text-white/20">•</span>
-                      <span>{Math.round(Math.max(30, day.esercizi.reduce((sum, ex) => sum + (ex.serie * (ex.recupero || 90) + ex.serie * 30) / 60, 0)))} min stimati</span>
+                      <span>{Math.round(Math.max(30, day.esercizi.reduce((sum, ex) => {
+                        const exTime = ex.blocks && ex.blocks.length > 0
+                          ? ex.blocks.reduce((bSum, b) => bSum + (b.serie * (b.recupero || 90) + b.serie * 30), 0)
+                          : (ex.serie * (ex.recupero || 90) + ex.serie * 30);
+                        return sum + exTime / 60;
+                      }, 0)))} min stimati</span>
                     </div>
                   </div>
 
@@ -2026,17 +2560,17 @@ export default function WorkoutWizard({
                 <div className="overflow-auto w-full max-h-[600px] rounded-xl border border-white/5 bg-black/20 scrollbar-thin">
                   <table 
                     className="w-full text-left border-collapse table-fixed"
-                    style={{ minWidth: `${550 + weeks.length * 110}px` }}
+                    style={{ minWidth: `${784 + weeks.length * 110}px` }}
                   >
                     <thead>
                       <tr>
                         {/* Main Headers */}
-                        <th className="sticky top-0 left-0 z-30 bg-neutral-950 border-b border-r border-white/5 p-2 text-center text-[10px] font-black uppercase text-white/40 w-10 shrink-0">#</th>
-                        <th className="sticky top-0 left-10 z-30 bg-neutral-950 border-b border-r border-white/5 p-2 text-left text-[10px] font-black uppercase text-white/40 w-[140px] shrink-0">Esercizio</th>
-                        <th className="sticky top-0 md:sticky md:left-[180px] z-20 bg-neutral-950 border-b border-r border-white/5 p-2 text-left text-[10px] font-black uppercase text-white/40 w-[60px] shrink-0">Tipo</th>
-                        <th className="sticky top-0 md:sticky md:left-[240px] z-20 bg-neutral-950 border-b border-r border-white/5 p-2 text-left text-[10px] font-black uppercase text-white/40 w-[90px] shrink-0">Distretto</th>
-                        <th className="sticky top-0 md:sticky md:left-[330px] z-20 bg-neutral-950 border-b border-r border-white/5 p-2 text-left text-[10px] font-black uppercase text-white/40 w-[100px] shrink-0">Progressione</th>
-                        <th className="sticky top-0 md:sticky md:left-[430px] z-20 bg-neutral-950 border-b border-r border-white/5 p-2 text-center text-[10px] font-black uppercase text-white/40 w-[60px] shrink-0">T.U.T.</th>
+                        <th className="sticky top-0 left-0 z-30 bg-neutral-950 border-b border-r border-white/5 p-1.5 text-center text-[10px] font-black uppercase text-white/40 w-10 shrink-0" style={{ left: '0px', width: '40px', minWidth: '40px' }}>#</th>
+                        <th className="sticky top-0 z-30 bg-neutral-950 border-b border-r border-white/5 p-1.5 text-left text-[10px] font-black uppercase text-white/40 shrink-0" style={{ left: '40px', width: '60px', minWidth: '60px' }}>Tipo</th>
+                        <th className="sticky top-0 z-30 bg-neutral-950 border-b border-r border-white/5 p-1.5 text-left text-[10px] font-black uppercase text-white/40 shrink-0" style={{ left: '100px', width: '85px', minWidth: '85px' }}>Distretto</th>
+                        <th className="sticky top-0 z-30 bg-neutral-950 border-b border-r border-white/5 p-1.5 text-left text-[10px] font-black uppercase text-white/40 shrink-0" style={{ left: '185px', width: '100px', minWidth: '100px' }}>Progressione</th>
+                        <th className="sticky top-0 z-30 bg-neutral-950 border-b border-r border-white/5 p-1.5 text-left text-[10px] font-black uppercase text-white/40 shrink-0" style={{ left: '285px', width: '175px', minWidth: '175px' }}>Esercizio</th>
+                        <th className="sticky top-0 z-30 bg-neutral-950 border-b border-r border-white/5 p-1.5 text-center text-[10px] font-black uppercase text-white/40 shrink-0" style={{ left: '460px', width: '60px', minWidth: '60px' }}>T.U.T.</th>
                         
                         {weeks.map((w) => {
                           const isSelected = w.weekIndex === activeWeekIndex;
@@ -2057,18 +2591,18 @@ export default function WorkoutWizard({
                           );
                         })}
                         
-                        <th className="sticky top-0 z-10 bg-neutral-950 border-b border-r border-white/5 p-2 text-center text-[10px] font-black uppercase text-white/40 w-20">Recupero</th>
-                        <th className="sticky top-0 z-10 bg-neutral-950 border-b border-r border-white/5 p-2 text-left text-[10px] font-black uppercase text-white/40 w-36">Note</th>
-                        <th className="sticky top-0 z-10 bg-neutral-950 border-b border-white/5 p-2 text-center text-[10px] font-black uppercase text-white/40 w-10"></th>
+                        <th className="sticky top-0 z-10 bg-neutral-950 border-b border-r border-white/5 p-1.5 text-center text-[10px] font-black uppercase text-white/40 w-20">Recupero</th>
+                        <th className="sticky top-0 z-10 bg-neutral-950 border-b border-r border-white/5 p-1.5 text-left text-[10px] font-black uppercase text-white/40 w-36">Note</th>
+                        <th className="sticky top-0 z-10 bg-neutral-950 border-b border-white/5 p-1.5 text-center text-[10px] font-black uppercase text-white/40 w-10"></th>
                       </tr>
                       <tr>
                         {/* Subelement alignment placeholders */}
-                        <th className="sticky top-[36px] left-0 z-30 bg-neutral-950 border-b border-r border-white/5 p-1 w-10"></th>
-                        <th className="sticky top-[36px] left-10 z-30 bg-neutral-950 border-b border-r border-white/5 p-1 w-[140px]"></th>
-                        <th className="sticky top-[36px] md:left-[180px] z-20 bg-neutral-950 border-b border-r border-white/5 p-1 w-[60px]"></th>
-                        <th className="sticky top-[36px] md:left-[240px] z-20 bg-neutral-950 border-b border-r border-white/5 p-1 w-[90px]"></th>
-                        <th className="sticky top-[36px] md:left-[330px] z-20 bg-neutral-950 border-b border-r border-white/5 p-1 w-[100px]"></th>
-                        <th className="sticky top-[36px] md:left-[430px] z-20 bg-neutral-950 border-b border-r border-white/5 p-1 w-[60px]"></th>
+                        <th className="sticky top-[32px] left-0 z-30 bg-neutral-950 border-b border-r border-white/5 p-1 w-10" style={{ left: '0px', width: '40px', minWidth: '40px' }}></th>
+                        <th className="sticky top-[32px] z-30 bg-neutral-950 border-b border-r border-white/5 p-1 w-[60px]" style={{ left: '40px', width: '60px', minWidth: '60px' }}></th>
+                        <th className="sticky top-[32px] z-30 bg-neutral-950 border-b border-r border-white/5 p-1 w-[85px]" style={{ left: '100px', width: '85px', minWidth: '85px' }}></th>
+                        <th className="sticky top-[32px] z-30 bg-neutral-950 border-b border-r border-white/5 p-1 w-[100px]" style={{ left: '185px', width: '100px', minWidth: '100px' }}></th>
+                        <th className="sticky top-[32px] z-30 bg-neutral-950 border-b border-r border-white/5 p-1 w-[175px]" style={{ left: '285px', width: '175px', minWidth: '175px' }}></th>
+                        <th className="sticky top-[32px] z-30 bg-neutral-950 border-b border-r border-white/5 p-1 w-[60px]" style={{ left: '460px', width: '60px', minWidth: '60px' }}></th>
                         
                         {weeks.map((w) => {
                           const isSelected = w.weekIndex === activeWeekIndex;
@@ -2076,7 +2610,7 @@ export default function WorkoutWizard({
                           return (
                             <React.Fragment key={w.weekIndex}>
                               <th 
-                                className={`sticky top-[36px] border-b border-r border-white/5 p-0.5 text-center text-[8px] font-black uppercase ${baseClass}`}
+                                className={`sticky top-[32px] border-b border-r border-white/5 p-0.5 text-center text-[8px] font-black uppercase ${baseClass}`}
                                 style={{ 
                                   backgroundColor: isSelected ? `${config.primaryColor}10` : undefined,
                                   color: isSelected ? config.primaryColor : undefined
@@ -2085,7 +2619,7 @@ export default function WorkoutWizard({
                                 SET
                               </th>
                               <th 
-                                className={`sticky top-[36px] border-b border-r border-white/5 p-0.5 text-center text-[8px] font-black uppercase ${baseClass}`}
+                                className={`sticky top-[32px] border-b border-r border-white/5 p-0.5 text-center text-[8px] font-black uppercase ${baseClass}`}
                                 style={{ 
                                   backgroundColor: isSelected ? `${config.primaryColor}10` : undefined,
                                   color: isSelected ? config.primaryColor : undefined
@@ -2094,7 +2628,7 @@ export default function WorkoutWizard({
                                 REPS
                               </th>
                               <th 
-                                className={`sticky top-[36px] border-b border-r border-white/5 p-0.5 text-center text-[8px] font-black uppercase ${baseClass}`}
+                                className={`sticky top-[32px] border-b border-r border-white/5 p-0.5 text-center text-[8px] font-black uppercase ${baseClass}`}
                                 style={{ 
                                   backgroundColor: isSelected ? `${config.primaryColor}10` : undefined,
                                   color: isSelected ? config.primaryColor : undefined
@@ -2106,9 +2640,9 @@ export default function WorkoutWizard({
                           );
                         })}
                         
-                        <th className="sticky top-[36px] z-10 bg-neutral-950 border-b border-r border-white/5 p-1 w-20"></th>
-                        <th className="sticky top-[36px] z-10 bg-neutral-950 border-b border-r border-white/5 p-1 w-36"></th>
-                        <th className="sticky top-[36px] z-10 bg-neutral-950 border-b border-white/5 p-1 w-10"></th>
+                        <th className="sticky top-[32px] z-10 bg-neutral-950 border-b border-r border-white/5 p-1 w-20"></th>
+                        <th className="sticky top-[32px] z-10 bg-neutral-950 border-b border-r border-white/5 p-1 w-36"></th>
+                        <th className="sticky top-[32px] z-10 bg-neutral-950 border-b border-white/5 p-1 w-10"></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2123,32 +2657,26 @@ export default function WorkoutWizard({
                             style={{ backgroundColor: isInGroup ? `${config.primaryColor}05` : undefined }}
                           >
                             {/* Number Col */}
-                            <td className="sticky left-0 z-10 bg-neutral-950 border-r border-white/5 p-1.5 text-center text-xs font-mono font-bold text-white/50 relative">
+                            <td 
+                              className="sticky left-0 z-10 bg-neutral-950 border-r border-white/5 py-1 px-1.5 text-center text-xs font-mono font-bold text-white/50 relative"
+                              style={{ left: '0px', width: '40px', minWidth: '40px' }}
+                            >
                               {isInGroup && (
                                 <span className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: config.primaryColor }} />
                               )}
                               {exIdx + 1}
                             </td>
 
-                            {/* Esercizio Col */}
-                            <td className="sticky left-10 z-10 bg-neutral-950 border-r border-white/5 p-1.5">
-                              <div className="flex items-center gap-1 font-extrabold text-white text-xs truncate max-w-[130px]" title={ex.nome}>
-                                <span className="truncate">{ex.nome}</span>
-                                {ex.linkVideo && (
-                                  <a href={ex.linkVideo} target="_blank" rel="noreferrer" className="text-red-400 hover:text-red-300 ml-0.5 shrink-0">
-                                    <Video className="w-3 h-3" />
-                                  </a>
-                                )}
-                              </div>
-                            </td>
-
                             {/* Tipo Col */}
-                            <td className="md:sticky md:left-[180px] z-10 bg-neutral-950 border-r border-white/5 p-1.5">
-                              <div className="bg-black/40 px-1.5 py-0.5 rounded border border-white/5 hover:border-white/25 transition-all">
+                            <td 
+                              className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-1"
+                              style={{ left: '40px', width: '60px', minWidth: '60px' }}
+                            >
+                              <div className="bg-black/40 px-1 py-0 rounded border border-white/5 hover:border-white/25 transition-all">
                                 <select 
                                   value={ex.indicazioniEsecuzione || 'Base'} 
                                   onChange={(e) => handleUpdateExParam(day.id, ex.id, 'indicazioniEsecuzione', e.target.value)}
-                                  className="bg-transparent text-[9px] font-black text-white/80 uppercase focus:outline-none cursor-pointer w-full text-center"
+                                  className="bg-transparent text-[9px] font-black text-white/80 uppercase focus:outline-none cursor-pointer w-full text-center h-5"
                                 >
                                   <option value="Base" className="bg-neutral-950 text-white font-bold">Base</option>
                                   <option value="Compl." className="bg-neutral-950 text-white font-bold">Compl.</option>
@@ -2158,12 +2686,15 @@ export default function WorkoutWizard({
                             </td>
 
                             {/* Distretto Col */}
-                            <td className="md:sticky md:left-[240px] z-10 bg-neutral-950 border-r border-white/5 p-1.5">
-                              <div className="bg-black/40 px-1.5 py-0.5 rounded border border-white/5 hover:border-white/25 transition-all">
+                            <td 
+                              className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-1"
+                              style={{ left: '100px', width: '85px', minWidth: '85px' }}
+                            >
+                              <div className="bg-black/40 px-1 py-0 rounded border border-white/5 hover:border-white/25 transition-all">
                                 <select 
                                   value={ex.distrettoMuscolare} 
                                   onChange={(e) => handleUpdateExParam(day.id, ex.id, 'distrettoMuscolare', e.target.value)}
-                                  className="bg-transparent text-[9px] font-bold text-white/60 focus:outline-none cursor-pointer max-w-[80px] truncate w-full text-center"
+                                  className="bg-transparent text-[9px] font-bold text-white/60 focus:outline-none cursor-pointer w-full text-center h-5"
                                 >
                                   <option value="Pettorali" className="bg-neutral-950 text-white">Pettorali</option>
                                   <option value="Dorso" className="bg-neutral-950 text-white">Dorso</option>
@@ -2185,12 +2716,15 @@ export default function WorkoutWizard({
                             </td>
 
                             {/* Progressione Col */}
-                            <td className="md:sticky md:left-[330px] z-10 bg-neutral-950 border-r border-white/5 p-1.5">
-                              <div className="bg-black/40 px-1.5 py-0.5 rounded border border-white/5 hover:border-white/25 transition-all">
+                            <td 
+                              className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-1"
+                              style={{ left: '185px', width: '100px', minWidth: '100px' }}
+                            >
+                              <div className="bg-black/40 px-1 py-0 rounded border border-white/5 hover:border-white/25 transition-all">
                                 <select
                                   value={ex.tecnicaIntensita || 'Nessuna'}
                                   onChange={(e) => handleUpdateExParam(day.id, ex.id, 'tecnicaIntensita', e.target.value)}
-                                  className="bg-transparent text-[9px] font-bold text-white/80 focus:outline-none cursor-pointer w-full text-center"
+                                  className="bg-transparent text-[9px] font-bold text-white/80 focus:outline-none cursor-pointer w-full text-center h-5"
                                 >
                                   <option value="Nessuna" className="bg-neutral-950 text-white">Standard</option>
                                   <option value="Top set" className="bg-neutral-950 text-white">Top set</option>
@@ -2203,8 +2737,36 @@ export default function WorkoutWizard({
                               </div>
                             </td>
 
+                            {/* Esercizio Col */}
+                            <td 
+                              className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-2"
+                              style={{ left: '285px', width: '175px', minWidth: '175px' }}
+                            >
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-1 font-extrabold text-white text-xs" title={ex.nome}>
+                                  <span className="line-clamp-2 leading-tight break-words">{ex.nome}</span>
+                                  {ex.linkVideo && (
+                                    <a href={ex.linkVideo} target="_blank" rel="noreferrer" className="text-red-400 hover:text-red-300 ml-0.5 shrink-0">
+                                      <Video className="w-3 h-3" />
+                                    </a>
+                                  )}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenBlocksManager(day.id, ex.id)}
+                                  className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[9px] font-bold text-white/60 hover:text-white transition-all cursor-pointer border border-white/5 w-fit"
+                                >
+                                  <Layers className="w-2.5 h-2.5 text-[#CCFF00]" style={{ color: config.primaryColor }} />
+                                  <span>{ex.blocks && ex.blocks.length > 0 ? `Blocchi (${ex.blocks.length})` : 'Gestisci blocchi'}</span>
+                                </button>
+                              </div>
+                            </td>
+
                             {/* TUT Col */}
-                            <td className="md:sticky md:left-[430px] z-10 bg-neutral-950 border-r border-white/5 p-1.5 text-center">
+                            <td 
+                              className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-1 text-center"
+                              style={{ left: '460px', width: '60px', minWidth: '60px' }}
+                            >
                               <input
                                 type="text"
                                 value={ex.tut || ''}
@@ -2218,8 +2780,8 @@ export default function WorkoutWizard({
                             {weeks.map((w) => {
                               const isSelected = w.weekIndex === activeWeekIndex;
                               const targetWeekObj = weeks.find(wk => wk.weekIndex === w.weekIndex);
-                              const targetDayObj = targetWeekObj?.giornate[dIdx];
-                              const targetEx = targetDayObj?.esercizi[exIdx];
+                              const targetDayObj = targetWeekObj?.giornate.find(d => d.programDayId === day.programDayId) || targetWeekObj?.giornate[dIdx];
+                              const targetEx = targetDayObj?.esercizi.find(e => e.programRowId === ex.programRowId) || (exIdx !== undefined ? targetDayObj?.esercizi[exIdx] : undefined);
 
                               const bgStyle = isSelected 
                                 ? { backgroundColor: `${config.primaryColor}06` } 
@@ -2231,6 +2793,52 @@ export default function WorkoutWizard({
                                     <td style={bgStyle} className="border-r border-white/5 p-1 text-center text-xs text-white/10">-</td>
                                     <td style={bgStyle} className="border-r border-white/5 p-1 text-center text-xs text-white/10">-</td>
                                     <td style={bgStyle} className="border-r border-white/5 p-1 text-center text-xs text-white/10">-</td>
+                                  </React.Fragment>
+                                );
+                              }
+
+                              const hasBlocks = targetEx.blocks && targetEx.blocks.length > 0;
+
+                              if (hasBlocks) {
+                                return (
+                                  <React.Fragment key={w.weekIndex}>
+                                    {/* SET Sub-cell with blocks */}
+                                    <td style={bgStyle} className="border-r border-white/5 p-1 text-center">
+                                      <div className="flex flex-col justify-center items-center gap-1">
+                                        {targetEx.blocks!.map((b, idx) => (
+                                          <div key={b.id || idx} className="h-6 flex items-center justify-center font-mono text-[11px] font-black text-white/85">
+                                            {b.serie}s
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </td>
+
+                                    {/* REPS Sub-cell with blocks */}
+                                    <td style={bgStyle} className="border-r border-white/5 p-1">
+                                      <div className="flex flex-col justify-center items-center gap-1">
+                                        {targetEx.blocks!.map((b, idx) => (
+                                          <div key={b.id || idx} className="h-6 flex items-center justify-center gap-0.5 text-[10px] font-mono font-bold text-white">
+                                            {b.repMin === b.repMax ? b.repMin : `${b.repMin}–${b.repMax}`}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </td>
+
+                                    {/* INFO Sub-cell with blocks */}
+                                    <td style={bgStyle} className="border-r border-white/5 p-1">
+                                      <div className="flex flex-col justify-center items-center gap-1">
+                                        {targetEx.blocks!.map((b, idx) => {
+                                          const rirText = b.rir !== undefined ? `RIR ${b.rir}` : '';
+                                          const label = b.nome || `Blocco ${idx + 1}`;
+                                          const infoStr = [label, rirText].filter(Boolean).join(' · ');
+                                          return (
+                                            <div key={b.id || idx} className="h-6 flex items-center justify-center text-[9px] font-mono text-white/85 w-full px-0.5 truncate text-center" title={infoStr}>
+                                              {infoStr}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </td>
                                   </React.Fragment>
                                 );
                               }
@@ -2454,13 +3062,19 @@ export default function WorkoutWizard({
                       <tr className="bg-neutral-950 font-bold border-t border-white/10">
                         <td 
                           colSpan={6} 
-                          className="sticky left-0 bg-neutral-950 z-10 text-right pr-4 py-3 text-[10px] font-black uppercase text-white/40 border-r border-white/5"
+                          className="sticky left-0 bg-neutral-950 z-10 text-right pr-4 py-2 text-[10px] font-black uppercase text-white/40 border-r border-white/5"
+                          style={{ left: '0px', width: '520px', minWidth: '520px' }}
                         >
                           TOTALE SERIE
                         </td>
                         {weeks.map((w) => {
                           const targetWeekObj = weeks.find(wk => wk.weekIndex === w.weekIndex);
-                          const totalSetsForWeekDay = targetWeekObj?.giornate[dIdx]?.esercizi.reduce((sum, e) => sum + (Number(e.serie) || 0), 0) || 0;
+                          const totalSetsForWeekDay = targetWeekObj?.giornate[dIdx]?.esercizi.reduce((sum, e) => {
+                            const sets = e.blocks && e.blocks.length > 0
+                              ? e.blocks.reduce((bSum, b) => bSum + Number(b.serie || 0), 0)
+                              : Number(e.serie || 0);
+                            return sum + sets;
+                          }, 0) || 0;
                           const isSelected = w.weekIndex === activeWeekIndex;
                           const bgStyle = isSelected 
                             ? { backgroundColor: `${config.primaryColor}06` } 
@@ -2470,7 +3084,7 @@ export default function WorkoutWizard({
                               key={w.weekIndex} 
                               colSpan={3} 
                               style={bgStyle}
-                              className="text-center font-black text-xs text-white py-3 border-r border-white/5"
+                              className="text-center font-black text-xs text-white py-2 border-r border-white/5"
                             >
                               <span style={{ color: isSelected ? config.primaryColor : undefined }}>
                                 {totalSetsForWeekDay} s
@@ -2486,6 +3100,7 @@ export default function WorkoutWizard({
                         <td 
                           colSpan={6} 
                           className="sticky left-0 bg-neutral-950 z-10 text-right pr-4 py-2 text-[9px] font-bold uppercase text-white/30 border-r border-white/5"
+                          style={{ left: '0px', width: '520px', minWidth: '520px' }}
                         >
                           SETTIMANA DI RIFERIMENTO
                         </td>
@@ -2914,6 +3529,359 @@ export default function WorkoutWizard({
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= DELETE EXERCISE CONFIRMATION MODAL ================= */}
+      {deleteExConfig && (
+        <div id="delete-exercise-confirm-modal" className="fixed inset-0 z-50 bg-neutral-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-[#121212] border border-white/10 rounded-2xl overflow-hidden shadow-2xl p-6 flex flex-col gap-4 text-center">
+            <div className="flex justify-center">
+              <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center text-red-500">
+                <Trash2 className="w-6 h-6" />
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <h3 className="font-extrabold text-white text-base">Rimuovere l'esercizio?</h3>
+              <p className="text-xs text-white/60 leading-relaxed">
+                Stai per rimuovere l'esercizio <span className="font-bold text-white">"{deleteExConfig.exNome}"</span>. Scegli se eliminarlo solo da questa settimana o da tutte le settimane del programma.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2 mt-2">
+              <button
+                type="button"
+                onClick={performDeleteExThisWeekOnly}
+                className="w-full py-2.5 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 text-white font-bold text-xs transition-all cursor-pointer"
+              >
+                Solo dalla settimana selezionata (W{activeWeekIndex})
+              </button>
+              
+              <button
+                type="button"
+                onClick={performDeleteExAllWeeks}
+                className="w-full py-2.5 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs transition-all cursor-pointer shadow-lg shadow-red-900/10"
+              >
+                Da tutte le settimane
+              </button>
+              
+              <button
+                type="button"
+                onClick={() => setDeleteExConfig(null)}
+                className="w-full py-2 px-4 rounded-xl text-white/40 hover:text-white text-xs transition-all cursor-pointer mt-1"
+              >
+                Annulla
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= STRUCTURED BLOCKS MANAGER MODAL ================= */}
+      {blocksManagerConfig && blocksEx && (
+        <div id="blocks-manager-modal" className="fixed inset-0 z-50 bg-neutral-950/85 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="w-full max-w-2xl bg-[#121212] border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-white/5 flex justify-between items-center bg-neutral-900 shrink-0">
+              <div className="space-y-0.5">
+                <h3 className="font-extrabold text-white text-base flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-[#CCFF00]" style={{ color: config.primaryColor }} />
+                  <span>Gestisci blocchi strutturati</span>
+                </h3>
+                <p className="text-xs text-white/50 font-bold truncate max-w-md">{blocksEx.nome}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBlocksManagerConfig(null)}
+                className="w-8 h-8 rounded-full hover:bg-white/5 flex items-center justify-center text-white/50 hover:text-white transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Success message / Notification banner */}
+            {blocksSuccessMsg && (
+              <div className="bg-emerald-950/40 border-y border-emerald-800/30 px-6 py-2 flex items-center gap-2 text-emerald-400 text-xs font-bold shrink-0">
+                <Check className="w-3.5 h-3.5 shrink-0" />
+                <span>{blocksSuccessMsg}</span>
+              </div>
+            )}
+
+            {/* Scrollable Content Area */}
+            <div className="p-6 overflow-y-auto space-y-4 flex-1">
+              {activeBlocks.length === 0 ? (
+                /* Proposal to convert current values if empty */
+                <div className="bg-neutral-900 border border-white/5 rounded-xl p-6 text-center space-y-4">
+                  <div className="w-12 h-12 rounded-full bg-[#CCFF00]/10 flex items-center justify-center text-[#CCFF00] mx-auto" style={{ backgroundColor: `${config.primaryColor}15`, color: config.primaryColor }}>
+                    <Layers className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-2">
+                    <h4 className="font-extrabold text-white text-sm">Nessun blocco strutturato</h4>
+                    <p className="text-xs text-white/60 leading-relaxed max-w-md mx-auto">
+                      Questo esercizio non possiede ancora blocchi strutturati per questa settimana.
+                      Vuoi convertire i parametri attuali dell'esercizio come primo blocco, oppure iniziare da zero?
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-sm mx-auto pt-2">
+                    <button
+                      type="button"
+                      onClick={handleConvertToBlocks}
+                      className="py-2 px-3 rounded-xl bg-[#CCFF00] hover:opacity-90 text-neutral-950 font-bold text-xs transition-all cursor-pointer shadow-md"
+                      style={{ backgroundColor: config.primaryColor }}
+                    >
+                      Sì, converti i valori attuali
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCreateEmptyBlock}
+                      className="py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 text-white font-bold text-xs transition-all cursor-pointer"
+                    >
+                      No, inizia da zero
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* Block Editor Cards Stack */
+                <div className="space-y-4">
+                  {activeBlocks.map((b, idx) => (
+                    <div key={b.id} className="bg-neutral-900 border border-white/5 rounded-xl p-4 space-y-3 relative">
+                      {/* Block card header */}
+                      <div className="flex justify-between items-center border-b border-white/5 pb-2">
+                        <div className="flex items-center gap-2 flex-1">
+                          <span className="w-5 h-5 rounded-full bg-white/5 text-white/50 text-[10px] font-black flex items-center justify-center">
+                            {idx + 1}
+                          </span>
+                          <input
+                            type="text"
+                            value={b.nome}
+                            onChange={(e) => handleUpdateBlockField(b.id, 'nome', e.target.value)}
+                            placeholder={`es. Blocco ${idx + 1}`}
+                            className="bg-transparent font-extrabold text-white text-xs focus:outline-none border-b border-transparent focus:border-white/30 pb-0.5 w-40"
+                          />
+                        </div>
+                        
+                        <div className="flex items-center gap-1">
+                          {/* Sposta su */}
+                          <button
+                            type="button"
+                            disabled={idx === 0}
+                            onClick={() => handleMoveBlock(idx, 'up')}
+                            className="w-7 h-7 rounded hover:bg-white/5 flex items-center justify-center text-white/40 hover:text-white disabled:opacity-20 disabled:pointer-events-none transition-all cursor-pointer"
+                            title="Sposta su"
+                          >
+                            <ArrowUp className="w-3.5 h-3.5" />
+                          </button>
+                          {/* Sposta giù */}
+                          <button
+                            type="button"
+                            disabled={idx === activeBlocks.length - 1}
+                            onClick={() => handleMoveBlock(idx, 'down')}
+                            className="w-7 h-7 rounded hover:bg-white/5 flex items-center justify-center text-white/40 hover:text-white disabled:opacity-20 disabled:pointer-events-none transition-all cursor-pointer"
+                            title="Sposta giù"
+                          >
+                            <ArrowDown className="w-3.5 h-3.5" />
+                          </button>
+                          {/* Duplica */}
+                          <button
+                            type="button"
+                            onClick={() => handleDuplicateBlock(b)}
+                            className="w-7 h-7 rounded hover:bg-white/5 flex items-center justify-center text-white/40 hover:text-white transition-all cursor-pointer"
+                            title="Duplica blocco"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                          </button>
+                          {/* Elimina */}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteBlock(b.id)}
+                            className="w-7 h-7 rounded hover:bg-red-500/10 flex items-center justify-center text-white/40 hover:text-red-400 transition-all cursor-pointer"
+                            title="Elimina blocco"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Input fields grid */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-left">
+                        {/* Serie */}
+                        <div className="space-y-1">
+                          <label className="block text-[9px] uppercase font-bold text-white/40">Serie</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={b.serie}
+                            onChange={(e) => handleUpdateBlockField(b.id, 'serie', Number(e.target.value))}
+                            className="w-full px-2 py-1.5 rounded-lg bg-black/40 border border-white/5 text-xs text-white font-mono focus:outline-none"
+                          />
+                        </div>
+
+                        {/* RepMin & RepMax */}
+                        <div className="space-y-1 col-span-1">
+                          <label className="block text-[9px] uppercase font-bold text-white/40">Ripetizioni (Min-Max)</label>
+                          <div className="flex items-center gap-1 bg-black/40 border border-white/5 rounded-lg px-2 py-1">
+                            <input
+                              type="number"
+                              min="1"
+                              value={b.repMin}
+                              onChange={(e) => handleUpdateBlockField(b.id, 'repMin', Number(e.target.value))}
+                              className="w-full bg-transparent text-center text-xs text-white font-mono focus:outline-none"
+                            />
+                            <span className="text-white/20">-</span>
+                            <input
+                              type="number"
+                              min="1"
+                              value={b.repMax}
+                              onChange={(e) => handleUpdateBlockField(b.id, 'repMax', Number(e.target.value))}
+                              className="w-full bg-transparent text-center text-xs text-white font-mono focus:outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        {/* RIR */}
+                        <div className="space-y-1">
+                          <label className="block text-[9px] uppercase font-bold text-white/40">RIR</label>
+                          <input
+                            type="number"
+                            min="0"
+                            max="10"
+                            value={b.rir}
+                            onChange={(e) => handleUpdateBlockField(b.id, 'rir', Number(e.target.value))}
+                            className="w-full px-2 py-1.5 rounded-lg bg-black/40 border border-white/5 text-xs text-white font-mono focus:outline-none"
+                          />
+                        </div>
+
+                        {/* Recupero */}
+                        <div className="space-y-1">
+                          <label className="block text-[9px] uppercase font-bold text-white/40">Recupero (sec)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="15"
+                            value={b.recupero}
+                            onChange={(e) => handleUpdateBlockField(b.id, 'recupero', Number(e.target.value))}
+                            className="w-full px-2 py-1.5 rounded-lg bg-black/40 border border-white/5 text-xs text-white font-mono focus:outline-none"
+                          />
+                        </div>
+
+                        {/* TUT */}
+                        <div className="space-y-1">
+                          <label className="block text-[9px] uppercase font-bold text-white/40">T.U.T.</label>
+                          <input
+                            type="text"
+                            value={b.tut || ''}
+                            onChange={(e) => handleUpdateBlockField(b.id, 'tut', e.target.value)}
+                            placeholder="3-0-1-0"
+                            className="w-full px-2 py-1.5 rounded-lg bg-black/40 border border-white/5 text-xs text-white font-mono focus:outline-none"
+                          />
+                        </div>
+
+                        {/* Carico previsto */}
+                        <div className="space-y-1">
+                          <label className="block text-[9px] uppercase font-bold text-white/40">Carico previsto</label>
+                          <input
+                            type="text"
+                            value={b.caricoPrevisto || ''}
+                            onChange={(e) => handleUpdateBlockField(b.id, 'caricoPrevisto', e.target.value)}
+                            placeholder="es. 80 kg"
+                            className="w-full px-2 py-1.5 rounded-lg bg-black/40 border border-white/5 text-xs text-white placeholder-white/20 focus:outline-none"
+                          />
+                        </div>
+
+                        {/* Tecnica di intensita */}
+                        <div className="space-y-1 col-span-2">
+                          <label className="block text-[9px] uppercase font-bold text-white/40">Tecnica di Intensità</label>
+                          <select
+                            value={b.tecnicaIntensita || 'Nessuna'}
+                            onChange={(e) => handleUpdateBlockField(b.id, 'tecnicaIntensita', e.target.value)}
+                            className="w-full px-2 py-1.5 rounded-lg bg-black/40 border border-white/5 text-xs text-white focus:outline-none cursor-pointer"
+                          >
+                            <option value="Nessuna">Standard</option>
+                            <option value="Top set">Top set</option>
+                            <option value="Back-off">Back-off</option>
+                            <option value="Drop set">Drop set</option>
+                            <option value="Rest pause">Rest pause</option>
+                            <option value="Myo-reps">Myo-reps</option>
+                            <option value="Cluster set">Cluster set</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Note text field */}
+                      <div className="space-y-1 text-left">
+                        <label className="block text-[9px] uppercase font-bold text-white/40">Note specifiche blocco</label>
+                        <input
+                          type="text"
+                          value={b.note || ''}
+                          onChange={(e) => handleUpdateBlockField(b.id, 'note', e.target.value)}
+                          placeholder="Note specifiche per questo blocco..."
+                          className="w-full px-3 py-1.5 rounded-lg bg-black/40 border border-white/5 text-xs text-white placeholder-white/20 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Add Block card button */}
+                  <button
+                    type="button"
+                    onClick={handleAddBlock}
+                    className="w-full py-4 border border-dashed border-white/10 hover:border-white/25 rounded-xl text-xs font-bold text-white/50 hover:text-white bg-white/[0.01] hover:bg-white/[0.03] transition-all cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Aggiungi un altro blocco</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Action Footer */}
+            <div className="px-6 py-4 border-t border-white/5 bg-neutral-900 shrink-0 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
+              {/* Copy / Propagate operations */}
+              <div className="flex items-center gap-2">
+                {activeBlocks.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={activeWeekIndex >= planDurata}
+                      onClick={handleCopyBlocksToNextWeek}
+                      className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/5 text-[10px] font-bold uppercase tracking-wider text-white/80 hover:text-white disabled:opacity-25 disabled:pointer-events-none transition-all cursor-pointer"
+                      title="Copia i blocchi correnti nella settimana successiva"
+                    >
+                      Copia in W{activeWeekIndex + 1}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleApplyBlocksToAllWeeks}
+                      className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/5 text-[10px] font-bold uppercase tracking-wider text-white/80 hover:text-white transition-all cursor-pointer"
+                      title="Applica i blocchi correnti a tutte le settimane per questo esercizio"
+                    >
+                      Applica a tutte le settimane
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Close / Save */}
+              <div className="flex items-center justify-end gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setBlocksManagerConfig(null)}
+                  className="px-4 py-2 rounded-xl text-white/40 hover:text-white font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  Annulla
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveBlocks}
+                  className="px-5 py-2 rounded-xl bg-white text-neutral-950 font-black uppercase tracking-wider text-xs transition-all cursor-pointer shadow-lg hover:bg-neutral-200"
+                  style={activeBlocks.length > 0 ? { backgroundColor: config.primaryColor, color: '#0a0a0a' } : undefined}
+                >
+                  Salva e Chiudi
+                </button>
+              </div>
             </div>
           </div>
         </div>
