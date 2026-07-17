@@ -35,6 +35,54 @@ const calculateWeekIndexFromDate = (dateStr: string, plan: WorkoutPlan): number 
   return Math.min(Math.max(1, week), maxWeeks);
 };
 
+const findLastPerformanceLog = (
+  item: {
+    id: string;
+    nome: string;
+    targetEx: WorkoutExercise;
+  },
+  allLogs: LogbookEntry[],
+  clientId: string
+): LogbookEntry | undefined => {
+  const clientLogs = allLogs.filter(l => l.clienteId === clientId);
+  const targetProgramRowId = item.targetEx?.programRowId;
+  const targetExerciseId = item.id;
+  const targetNormName = item.nome.trim().toLowerCase();
+
+  // Sort by date descending
+  const sortedLogs = [...clientLogs].sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime());
+
+  // Order of priority:
+  // 1. programRowId
+  if (targetProgramRowId) {
+    const matchByRow = sortedLogs.find(l => l.programRowId === targetProgramRowId);
+    if (matchByRow) return matchByRow;
+  }
+
+  // 2. exerciseId (only if not from a different row/programRowId)
+  if (targetExerciseId) {
+    const matchByExId = sortedLogs.find(l => {
+      if (l.exerciseId !== targetExerciseId) return false;
+      if (targetProgramRowId && l.programRowId && l.programRowId !== targetProgramRowId) {
+        return false;
+      }
+      return true;
+    });
+    if (matchByExId) return matchByExId;
+  }
+
+  // 3. normalized name (only if not from a different row/programRowId)
+  const matchByName = sortedLogs.find(l => {
+    if (!l.exerciseNome) return false;
+    if (l.exerciseNome.trim().toLowerCase() !== targetNormName) return false;
+    if (targetProgramRowId && l.programRowId && l.programRowId !== targetProgramRowId) {
+      return false;
+    }
+    return true;
+  });
+  return matchByName;
+};
+
 export default function LogbookTracker({ client, config, onShowToast }: LogbookTrackerProps) {
   // Local storage logs
   const [logs, setLogs] = useState<LogbookEntry[]>([]);
@@ -149,28 +197,28 @@ export default function LogbookTracker({ client, config, onShowToast }: LogbookT
       if (hasBlocks) {
         initialSets = ex.blocks!.flatMap(b => {
           return Array.from({ length: b.serie }, () => ({
-            reps: b.repMax || 10,
+            reps: b.repMax ?? 10,
             weight: 0,
-            rir: b.rir || 2,
+            rir: b.rir ?? 2,
             blockId: b.id,
             blockName: b.nome,
             targetRepMin: b.repMin,
             targetRepMax: b.repMax,
             targetRir: b.rir,
-            targetCarico: b.caricoPrevisto || ''
+            targetCarico: b.caricoPrevisto ?? ''
           }));
         });
       } else {
         initialSets = Array.from({ length: ex.serie }, () => ({
-          reps: ex.repMax || 10,
+          reps: ex.repMax ?? 10,
           weight: 0,
-          rir: ex.rir || 2,
+          rir: ex.rir ?? 2,
           blockId: undefined,
           blockName: undefined,
           targetRepMin: ex.repMin,
           targetRepMax: ex.repMax,
           targetRir: ex.rir,
-          targetCarico: ex.caricoPrevisto || ''
+          targetCarico: ex.caricoPrevisto ?? ''
         }));
       }
 
@@ -193,9 +241,9 @@ export default function LogbookTracker({ client, config, onShowToast }: LogbookT
     
     item.sets = item.sets.map(s => {
       // If it's a block series, use block targets, else exercise targets
-      const repMax = s.targetRepMax !== undefined ? s.targetRepMax : (item.targetEx.repMax || 10);
-      const rir = s.targetRir !== undefined ? s.targetRir : (item.targetEx.rir || 2);
-      const caricoStr = s.targetCarico !== undefined ? s.targetCarico : (item.targetEx.caricoPrevisto || '');
+      const repMax = s.targetRepMax !== undefined ? s.targetRepMax : (item.targetEx.repMax ?? 10);
+      const rir = s.targetRir !== undefined ? s.targetRir : (item.targetEx.rir ?? 2);
+      const caricoStr = s.targetCarico !== undefined ? s.targetCarico : (item.targetEx.caricoPrevisto ?? '');
       
       let numericWeight = 0;
       if (caricoStr) {
@@ -232,12 +280,9 @@ export default function LogbookTracker({ client, config, onShowToast }: LogbookT
     }
 
     const allLogs: LogbookEntry[] = JSON.parse(storedLogs);
-    // Find the most recent entry for this client and this exercise
-    const sortedExerciseLogs = allLogs
-      .filter(l => l.clienteId === client.id && (l.exerciseId === item.id || l.exerciseNome.toLowerCase() === item.nome.toLowerCase()))
-      .sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime());
+    const lastLog = findLastPerformanceLog(item, allLogs, client.id);
 
-    if (sortedExerciseLogs.length === 0) {
+    if (!lastLog) {
       if (onShowToast) {
         onShowToast(`Nessuna prestazione passata trovata per l'esercizio "${item.nome}".`, "warning");
       } else {
@@ -246,7 +291,6 @@ export default function LogbookTracker({ client, config, onShowToast }: LogbookT
       return;
     }
 
-    const lastLog = sortedExerciseLogs[0];
     const updated = [...logExercises];
     
     // Re-fill sets matching the previous log sets count while preserving block targets
@@ -515,14 +559,12 @@ export default function LogbookTracker({ client, config, onShowToast }: LogbookT
                       const storedLogs = localStorage.getItem('pt_logbook');
                       if (storedLogs) {
                         const allLogs: LogbookEntry[] = JSON.parse(storedLogs);
-                        const sorted = allLogs
-                          .filter(l => l.clienteId === client.id && (l.exerciseId === ex.id || l.exerciseNome.toLowerCase() === ex.nome.toLowerCase()))
-                          .sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime());
-                        if (sorted.length > 0) {
+                        const lastLog = findLastPerformanceLog(ex, allLogs, client.id);
+                        if (lastLog) {
                           copiedCount++;
                           return {
                             ...ex,
-                            sets: sorted[0].sets.map((s, idx) => {
+                            sets: lastLog.sets.map((s, idx) => {
                               const targetSetInfo = ex.sets[idx] || ex.sets[ex.sets.length - 1] || {};
                               return {
                                 ...targetSetInfo,

@@ -280,6 +280,7 @@ export default function WorkoutWizard({
     exId: string;
   } | null>(null);
   const [activeBlocks, setActiveBlocks] = useState<WorkoutExerciseBlock[]>([]);
+  const [blockVolumeInputs, setBlockVolumeInputs] = useState<Record<string, string>>({});
   const [blocksSuccessMsg, setBlocksSuccessMsg] = useState<string | null>(null);
 
   // Analytics panel state
@@ -920,8 +921,14 @@ export default function WorkoutWizard({
     setBlocksManagerConfig({ dayId, exId });
     if (exObj.blocks && exObj.blocks.length > 0) {
       setActiveBlocks(JSON.parse(JSON.stringify(exObj.blocks)));
+      const inputs: Record<string, string> = {};
+      exObj.blocks.forEach(b => {
+        inputs[b.id] = b.volumeMultiplier !== undefined ? String(b.volumeMultiplier) : '1';
+      });
+      setBlockVolumeInputs(inputs);
     } else {
       setActiveBlocks([]);
+      setBlockVolumeInputs({});
     }
   };
 
@@ -947,6 +954,7 @@ export default function WorkoutWizard({
       volumeMultiplier: 1
     };
     setActiveBlocks([initialBlock]);
+    setBlockVolumeInputs({ [initialBlock.id]: '1' });
   };
 
   const handleCreateEmptyBlock = () => {
@@ -964,6 +972,7 @@ export default function WorkoutWizard({
       volumeMultiplier: 1
     };
     setActiveBlocks([initialBlock]);
+    setBlockVolumeInputs({ [initialBlock.id]: '1' });
   };
 
   const handleAddBlock = () => {
@@ -981,6 +990,7 @@ export default function WorkoutWizard({
       volumeMultiplier: 1
     };
     setActiveBlocks([...activeBlocks, newBlock]);
+    setBlockVolumeInputs(prev => ({ ...prev, [newBlock.id]: '1' }));
   };
 
   const handleUpdateBlockField = (blockId: string, field: keyof WorkoutExerciseBlock, value: any) => {
@@ -1001,6 +1011,8 @@ export default function WorkoutWizard({
     } else {
       setActiveBlocks([...activeBlocks, dup]);
     }
+    const sourceVal = blockVolumeInputs[block.id] !== undefined ? blockVolumeInputs[block.id] : (block.volumeMultiplier !== undefined ? String(block.volumeMultiplier) : '1');
+    setBlockVolumeInputs(prev => ({ ...prev, [dup.id]: sourceVal }));
   };
 
   const handleMoveBlock = (idx: number, direction: 'up' | 'down') => {
@@ -1016,6 +1028,31 @@ export default function WorkoutWizard({
 
   const handleDeleteBlock = (blockId: string) => {
     setActiveBlocks(prev => prev.filter(b => b.id !== blockId));
+    setBlockVolumeInputs(prev => {
+      const copy = { ...prev };
+      delete copy[blockId];
+      return copy;
+    });
+  };
+
+  const getNormalizedActiveBlocks = (): WorkoutExerciseBlock[] => {
+    return activeBlocks.map(b => {
+      let valStr = blockVolumeInputs[b.id];
+      let valNum = b.volumeMultiplier !== undefined ? b.volumeMultiplier : 1;
+      if (valStr !== undefined) {
+        valStr = valStr.trim().replace(',', '.');
+        if (valStr === '') {
+          valNum = 1;
+        } else {
+          const parsed = parseFloat(valStr);
+          valNum = isNaN(parsed) ? 1 : parsed;
+        }
+      }
+      return {
+        ...b,
+        volumeMultiplier: valNum
+      };
+    });
   };
 
   const handleCopyBlocksToNextWeek = () => {
@@ -1033,6 +1070,8 @@ export default function WorkoutWizard({
       return;
     }
 
+    const normalized = getNormalizedActiveBlocks();
+
     setWeeks(prevWeeks => prevWeeks.map(w => {
       if (w.weekIndex === nextWeekIdx) {
         return {
@@ -1041,10 +1080,10 @@ export default function WorkoutWizard({
             ...d,
             esercizi: d.esercizi.map(e => {
               if (e.programRowId === exObj.programRowId) {
-                const totalSets = activeBlocks.reduce((sum, b) => sum + Number(b.serie || 0), 0);
+                const totalSets = normalized.reduce((sum, b) => sum + Number(b.serie || 0), 0);
                 return {
                   ...e,
-                  blocks: JSON.parse(JSON.stringify(activeBlocks)),
+                  blocks: JSON.parse(JSON.stringify(normalized)),
                   serie: totalSets
                 };
               }
@@ -1068,6 +1107,8 @@ export default function WorkoutWizard({
     const exObj = dayObj?.esercizi.find(ex => ex.id === exId);
     if (!exObj) return;
 
+    const normalized = getNormalizedActiveBlocks();
+
     setWeeks(prevWeeks => prevWeeks.map(w => {
       return {
         ...w,
@@ -1075,10 +1116,10 @@ export default function WorkoutWizard({
           ...d,
           esercizi: d.esercizi.map(e => {
             if (e.programRowId === exObj.programRowId) {
-              const totalSets = activeBlocks.reduce((sum, b) => sum + Number(b.serie || 0), 0);
+              const totalSets = normalized.reduce((sum, b) => sum + Number(b.serie || 0), 0);
               return {
                 ...e,
-                blocks: JSON.parse(JSON.stringify(activeBlocks)),
+                blocks: JSON.parse(JSON.stringify(normalized)),
                 serie: totalSets
               };
             }
@@ -1096,6 +1137,8 @@ export default function WorkoutWizard({
     if (!blocksManagerConfig) return;
     const { dayId, exId } = blocksManagerConfig;
 
+    const normalized = getNormalizedActiveBlocks();
+
     setWeeks(prevWeeks => prevWeeks.map(w => {
       if (w.weekIndex === activeWeekIndex) {
         return {
@@ -1106,11 +1149,11 @@ export default function WorkoutWizard({
                 ...d,
                 esercizi: d.esercizi.map(e => {
                   if (e.id === exId) {
-                    const totalSets = activeBlocks.reduce((sum, b) => sum + Number(b.serie || 0), 0);
+                    const totalSets = normalized.reduce((sum, b) => sum + Number(b.serie || 0), 0);
                     return {
                       ...e,
-                      blocks: activeBlocks.length > 0 ? activeBlocks : undefined,
-                      serie: activeBlocks.length > 0 ? totalSets : e.serie
+                      blocks: normalized.length > 0 ? normalized : undefined,
+                      serie: normalized.length > 0 ? totalSets : e.serie
                     };
                   }
                   return e;
@@ -1370,7 +1413,7 @@ export default function WorkoutWizard({
             if (idx === copyTargetDayIdx) {
               return {
                 ...d,
-                esercizi: [...d.esercizi, ...clonedExercises]
+                esercizi: isSameLogicalDay ? clonedExercises : [...d.esercizi, ...clonedExercises]
               };
             }
             return d;
@@ -3898,11 +3941,29 @@ export default function WorkoutWizard({
                         <div className="space-y-1 col-span-1">
                           <label className="block text-[9px] uppercase font-bold text-[#CCFF00]" style={{ color: config.primaryColor }}>Moltiplicatore volume</label>
                           <input
-                            type="number"
-                            step="0.1"
-                            min="0"
-                            value={b.volumeMultiplier !== undefined ? b.volumeMultiplier : 1}
-                            onChange={(e) => handleUpdateBlockField(b.id, 'volumeMultiplier', parseFloat(e.target.value) || 1)}
+                            type="text"
+                            value={blockVolumeInputs[b.id] !== undefined ? blockVolumeInputs[b.id] : (b.volumeMultiplier !== undefined ? String(b.volumeMultiplier) : '1')}
+                            onChange={(e) => {
+                              const valStr = e.target.value;
+                              setBlockVolumeInputs(prev => ({ ...prev, [b.id]: valStr }));
+                            }}
+                            onBlur={() => {
+                              let valStr = blockVolumeInputs[b.id];
+                              let valNum = 1;
+                              if (valStr !== undefined) {
+                                valStr = valStr.trim();
+                                if (valStr === '') {
+                                  valNum = 1;
+                                  setBlockVolumeInputs(prev => ({ ...prev, [b.id]: '1' }));
+                                } else {
+                                  valStr = valStr.replace(',', '.');
+                                  const parsed = parseFloat(valStr);
+                                  valNum = isNaN(parsed) ? 1 : parsed;
+                                  setBlockVolumeInputs(prev => ({ ...prev, [b.id]: String(valNum) }));
+                                }
+                              }
+                              handleUpdateBlockField(b.id, 'volumeMultiplier', valNum);
+                            }}
                             className="w-full px-2 py-1.5 rounded-lg bg-black/40 border border-white/5 text-xs text-white font-mono focus:outline-none"
                             title="Coefficiente personalizzabile utilizzato nelle stime del volume. Il valore standard è 1."
                           />

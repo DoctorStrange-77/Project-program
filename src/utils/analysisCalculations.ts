@@ -26,6 +26,26 @@ export function parseTUT(tut?: string): number {
   return 3;
 }
 
+export function getLogbookWeekIndex(l: LogbookEntry, plan: WorkoutPlan): number {
+  const maxWeeks = plan.durataSettimane || 4;
+  if (l.weekIndex !== undefined) {
+    return Math.min(Math.max(1, l.weekIndex), maxWeeks);
+  }
+  const planStart = new Date(plan.dataInizio || '2026-06-01');
+  const logDate = new Date(l.data);
+  
+  const startMs = Date.UTC(planStart.getFullYear(), planStart.getMonth(), planStart.getDate());
+  const logMs = Date.UTC(logDate.getFullYear(), logDate.getMonth(), logDate.getDate());
+  
+  const diffTime = logMs - startMs;
+  if (diffTime < 0) {
+    return 1;
+  }
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  const week = Math.floor(diffDays / 7) + 1;
+  return Math.min(Math.max(1, week), maxWeeks);
+}
+
 // Retrieves all exercises from database
 export function getDatabaseExercises(): Exercise[] {
   if (typeof window !== 'undefined') {
@@ -165,7 +185,7 @@ export function getExerciseSets(ex: WorkoutExercise, dbExercises: Exercise[]): S
     ex.blocks.forEach(b => {
       const reps = (b.repMin + b.repMax) / 2;
       const blockTut = b.tut ? parseTUT(b.tut) : tutSecs;
-      const blockRec = b.recupero !== undefined ? b.recupero : (ex.recupero || 90);
+      const blockRec = b.recupero !== undefined ? b.recupero : (ex.recupero ?? 90);
       const blockCarico = parseWeight(b.caricoPrevisto);
       const volMult = b.volumeMultiplier !== undefined ? b.volumeMultiplier : 1;
       
@@ -184,7 +204,7 @@ export function getExerciseSets(ex: WorkoutExercise, dbExercises: Exercise[]): S
   } else {
     const sets: SetInfo[] = [];
     const reps = (ex.repMin + ex.repMax) / 2;
-    const rec = ex.recupero || 90;
+    const rec = ex.recupero ?? 90;
     const carico = parseWeight(ex.caricoPrevisto);
     for (let i = 0; i < ex.serie; i++) {
       sets.push({
@@ -794,12 +814,8 @@ export function runFullAnalysis(
 
   // Filter logbook logs matching the filtered days / exercises
   clientLogs.forEach(l => {
-    // Resolve week index from logbook date relative to plan start date
-    const planStart = new Date(planInScope!.dataInizio || '2026-06-01');
-    const logDate = new Date(l.data);
-    const diffTime = Math.abs(logDate.getTime() - planStart.getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    const calculatedWeek = Math.max(1, Math.ceil(diffDays / 7));
+    // Resolve week index from logbook date or stored weekIndex (Requirement 1)
+    const calculatedWeek = getLogbookWeekIndex(l, planInScope!);
 
     // Apply day filter
     if (filters.dayId !== 'all' && l.giornataNome !== filters.dayId) {
@@ -915,11 +931,7 @@ export function runFullAnalysis(
     const dailyLogs = logsByDate[date];
     const resolvedExs: WorkoutExercise[] = [];
     dailyLogs.forEach(l => {
-      const planStart = new Date(planInScope!.dataInizio || '2026-06-01');
-      const logDate = new Date(l.data);
-      const diffTime = Math.abs(logDate.getTime() - planStart.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      const calculatedWeek = Math.max(1, Math.ceil(diffDays / 7));
+      const calculatedWeek = getLogbookWeekIndex(l, planInScope!);
 
       const matchedEx = findMatchingWorkoutExercise(l, planInScope!, calculatedWeek);
       if (matchedEx) {
@@ -1005,11 +1017,7 @@ export function runFullAnalysis(
 
     // Executed matching
     logEntries.forEach(l => {
-      const planStart = new Date(planInScope!.dataInizio || '2026-06-01');
-      const logDate = new Date(l.data);
-      const diffTime = Math.abs(logDate.getTime() - planStart.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      const calculatedWeek = Math.max(1, Math.ceil(diffDays / 7));
+      const calculatedWeek = getLogbookWeekIndex(l, planInScope!);
 
       const matchedEx = findMatchingWorkoutExercise(l, planInScope!, calculatedWeek);
       const resolved = matchedEx ? resolveWorkoutExerciseData(matchedEx, dbExercises) : {
@@ -1037,11 +1045,7 @@ export function runFullAnalysis(
   for (let w = 1; w <= planWeeksCount; w++) {
     const weekSch = schExercisesAllWeeks.filter(s => s.weekIndex === w);
     const weekLogs = logEntriesAllWeeks.filter(l => {
-      const planStart = new Date(planInScope!.dataInizio || '2026-06-01');
-      const logDate = new Date(l.data);
-      const diffTime = Math.abs(logDate.getTime() - planStart.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      const calculatedWeek = Math.max(1, Math.ceil(diffDays / 7));
+      const calculatedWeek = getLogbookWeekIndex(l, planInScope!);
       return calculatedWeek === w;
     });
 
