@@ -38,7 +38,7 @@ interface SavedWorkoutsProps {
   plans: WorkoutPlan[];
   onEditPlan: (plan: WorkoutPlan) => void;
   onDuplicatePlan: (plan: WorkoutPlan) => void;
-  onDeletePlan: (id: string) => void;
+  onDeletePlan: (id: string, deleteLogs?: boolean) => void;
   onPrintPlan: (plan: WorkoutPlan) => void;
   onUpdatePlanStatus?: (planId: string, newStatus: WorkoutPlanStatus) => void;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info' | 'warning') => void;
@@ -89,7 +89,8 @@ export default function SavedWorkouts({
     e.stopPropagation();
     
     const performDelete = () => {
-      onDeletePlan(id);
+      const deleteLogs = window.confirm("Vuoi eliminare anche i logbook collegati a questa scheda?");
+      onDeletePlan(id, deleteLogs);
       if (selectedPlan?.id === id) {
         setSelectedPlan(null);
       }

@@ -706,8 +706,84 @@ export function runFullAnalysis(
     planInScope = activePlans[0];
   }
 
-  // Get matching logs for this client
-  const clientLogs = logbook.filter(l => l.clienteId === filters.clientId);
+  // Get matching logs for this client and filter by plan compatibility (Requirement 4)
+  const allClientLogs = logbook.filter(l => l.clienteId === filters.clientId);
+  
+  const planRowIds = new Set<string>();
+  const planDayIds = new Set<string>();
+  const planExIds = new Set<string>();
+  const planNormNames = new Set<string>();
+
+  const checkAndAddDayAndExercises = (day: WorkoutDay) => {
+    if (day.programDayId) {
+      planDayIds.add(day.programDayId);
+    }
+    if (day.esercizi) {
+      day.esercizi.forEach(ex => {
+        if (ex.programRowId) {
+          planRowIds.add(ex.programRowId);
+        }
+        if (ex.exerciseId) {
+          planExIds.add(ex.exerciseId);
+        }
+        if (ex.nome) {
+          planNormNames.add(ex.nome.trim().toLowerCase());
+        }
+      });
+    }
+  };
+
+  if (planInScope) {
+    if (planInScope.giornate) {
+      planInScope.giornate.forEach(checkAndAddDayAndExercises);
+    }
+    if (planInScope.weeks) {
+      planInScope.weeks.forEach(w => {
+        if (w.giornate) {
+          w.giornate.forEach(checkAndAddDayAndExercises);
+        }
+      });
+    }
+  }
+
+  const clientLogs = allClientLogs.filter(l => {
+    if (!planInScope) return false;
+    
+    // - includi i log con planId uguale alla scheda selezionata;
+    if (l.planId) {
+      return l.planId === planInScope.id;
+    }
+    
+    // - includi i vecchi log senza planId soltanto tramite una procedura di compatibilità;
+    // - escludi i log con planId appartenente a un’altra scheda.
+    
+    // Procedura di compatibilità per i vecchi log senza planId:
+    // 1. programRowId
+    if (l.programRowId && planRowIds.has(l.programRowId)) {
+      return true;
+    }
+    // 2. programDayId
+    if (l.programDayId && planDayIds.has(l.programDayId)) {
+      return true;
+    }
+    // 3. exerciseId e settimana
+    if (l.exerciseId && planExIds.has(l.exerciseId)) {
+      const calcWeek = getLogbookWeekIndex(l, planInScope);
+      const maxWeeks = planInScope.durataSettimane || 1;
+      if (calcWeek >= 1 && calcWeek <= maxWeeks) {
+        return true;
+      }
+    }
+    // 4. nome normalizzato come ultimo fallback
+    if (l.exerciseNome) {
+      const norm = l.exerciseNome.trim().toLowerCase();
+      if (planNormNames.has(norm)) {
+        return true;
+      }
+    }
+    
+    return false;
+  });
 
   // Initialize output
   const res: AnalysisResults = {

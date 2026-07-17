@@ -42,45 +42,60 @@ const findLastPerformanceLog = (
     targetEx: WorkoutExercise;
   },
   allLogs: LogbookEntry[],
-  clientId: string
+  clientId: string,
+  currentPlanId?: string
 ): LogbookEntry | undefined => {
-  const clientLogs = allLogs.filter(l => l.clienteId === clientId);
   const targetProgramRowId = item.targetEx?.programRowId;
   const targetExerciseId = item.id;
   const targetNormName = item.nome.trim().toLowerCase();
 
-  // Sort by date descending
-  const sortedLogs = [...clientLogs].sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime());
+  // 1. stesso cliente
+  const clientLogs = allLogs.filter(l => l.clienteId === clientId);
 
-  // Order of priority:
-  // 1. programRowId
-  if (targetProgramRowId) {
-    const matchByRow = sortedLogs.find(l => l.programRowId === targetProgramRowId);
-    if (matchByRow) return matchByRow;
-  }
+  const searchInSubset = (logsSubset: LogbookEntry[]): LogbookEntry | undefined => {
+    // Sort by date descending
+    const sortedLogs = [...logsSubset].sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime());
 
-  // 2. exerciseId (only if not from a different row/programRowId)
-  if (targetExerciseId) {
-    const matchByExId = sortedLogs.find(l => {
-      if (l.exerciseId !== targetExerciseId) return false;
+    // 3. stesso programRowId
+    if (targetProgramRowId) {
+      const matchByRow = sortedLogs.find(l => l.programRowId === targetProgramRowId);
+      if (matchByRow) return matchByRow;
+    }
+
+    // 4. stesso exerciseId
+    if (targetExerciseId) {
+      const matchByExId = sortedLogs.find(l => {
+        if (l.exerciseId !== targetExerciseId) return false;
+        if (targetProgramRowId && l.programRowId && l.programRowId !== targetProgramRowId) {
+          return false;
+        }
+        return true;
+      });
+      if (matchByExId) return matchByExId;
+    }
+
+    // 5. stesso nome normalizzato
+    const matchByName = sortedLogs.find(l => {
+      if (!l.exerciseNome) return false;
+      if (l.exerciseNome.trim().toLowerCase() !== targetNormName) return false;
       if (targetProgramRowId && l.programRowId && l.programRowId !== targetProgramRowId) {
         return false;
       }
       return true;
     });
-    if (matchByExId) return matchByExId;
+    return matchByName;
+  };
+
+  // Se il logbook corrente possiede planId, cerca prima esclusivamente nella stessa scheda.
+  if (currentPlanId) {
+    const samePlanLogs = clientLogs.filter(l => l.planId === currentPlanId);
+    const samePlanMatch = searchInSubset(samePlanLogs);
+    if (samePlanMatch) return samePlanMatch;
   }
 
-  // 3. normalized name (only if not from a different row/programRowId)
-  const matchByName = sortedLogs.find(l => {
-    if (!l.exerciseNome) return false;
-    if (l.exerciseNome.trim().toLowerCase() !== targetNormName) return false;
-    if (targetProgramRowId && l.programRowId && l.programRowId !== targetProgramRowId) {
-      return false;
-    }
-    return true;
-  });
-  return matchByName;
+  // Altrimenti fallback sui vecchi log senza planId (l.planId falsy), escludendo log di altre schede
+  const fallbackLogs = clientLogs.filter(l => !l.planId);
+  return searchInSubset(fallbackLogs);
 };
 
 export default function LogbookTracker({ client, config, onShowToast }: LogbookTrackerProps) {
@@ -280,7 +295,7 @@ export default function LogbookTracker({ client, config, onShowToast }: LogbookT
     }
 
     const allLogs: LogbookEntry[] = JSON.parse(storedLogs);
-    const lastLog = findLastPerformanceLog(item, allLogs, client.id);
+    const lastLog = findLastPerformanceLog(item, allLogs, client.id, selectedPlanId);
 
     if (!lastLog) {
       if (onShowToast) {
@@ -371,6 +386,7 @@ export default function LogbookTracker({ client, config, onShowToast }: LogbookT
       return {
         id: 'log_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
         clienteId: client.id,
+        planId: selectedPlanId,
         data: logDate,
         giornataNome: dayName,
         exerciseId: ex.id,
@@ -559,7 +575,7 @@ export default function LogbookTracker({ client, config, onShowToast }: LogbookT
                       const storedLogs = localStorage.getItem('pt_logbook');
                       if (storedLogs) {
                         const allLogs: LogbookEntry[] = JSON.parse(storedLogs);
-                        const lastLog = findLastPerformanceLog(ex, allLogs, client.id);
+                        const lastLog = findLastPerformanceLog(ex, allLogs, client.id, selectedPlanId);
                         if (lastLog) {
                           copiedCount++;
                           return {

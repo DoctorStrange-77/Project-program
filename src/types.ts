@@ -214,6 +214,7 @@ export interface LogbookSet {
 export interface LogbookEntry {
   id: string;
   clienteId: string;
+  planId?: string;
   data: string; // YYYY-MM-DD
   giornataNome: string;
   exerciseId: string;

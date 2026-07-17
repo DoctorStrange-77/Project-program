@@ -20,6 +20,7 @@ import PrintSheet from './components/PrintSheet';
 import TemplateManagement from './components/TemplateManagement';
 import BackupManager from './components/BackupManager';
 import TrainingAnalysis from './components/TrainingAnalysis';
+import { runDataMigrations } from './utils/dataMigrations';
 
 // Icons
 import { 
@@ -85,6 +86,9 @@ export default function App() {
 
   // --- LOCAL STORAGE SEED & LOAD ---
   useEffect(() => {
+    // Run initial data migrations
+    runDataMigrations();
+
     // 1. Load Coach Configuration
     const savedConfig = localStorage.getItem(STORAGE_KEYS.CONFIG);
     if (savedConfig) {
@@ -120,10 +124,13 @@ export default function App() {
 
     // 4. Load/Seed Workout Plans
     const savedPlans = localStorage.getItem(STORAGE_KEYS.PLANS);
+    let loadedPlans: WorkoutPlan[] = [];
     if (savedPlans) {
-      setPlans(JSON.parse(savedPlans));
+      loadedPlans = JSON.parse(savedPlans);
+      setPlans(loadedPlans);
     } else {
       // Seed initial demo plan for Mario Rossi
+      loadedPlans = DEMO_WORKOUT_PLANS;
       setPlans(DEMO_WORKOUT_PLANS);
       localStorage.setItem(STORAGE_KEYS.PLANS, JSON.stringify(DEMO_WORKOUT_PLANS));
     }
@@ -135,6 +142,87 @@ export default function App() {
     } else {
       setTemplates(DEMO_TEMPLATES);
       localStorage.setItem(STORAGE_KEYS.TEMPLATES, JSON.stringify(DEMO_TEMPLATES));
+    }
+
+    // 6. Migrazione dei vecchi logbook senza planId
+    const savedLogbook = localStorage.getItem('pt_logbook');
+    if (savedLogbook) {
+      const allLogs: LogbookEntry[] = JSON.parse(savedLogbook);
+      const needsMigration = allLogs.some(l => !l.planId);
+      if (needsMigration) {
+        const updatedLogs = allLogs.map(l => {
+          if (l.planId) return l;
+
+          const clientPlans = loadedPlans.filter(p => p.clienteId === l.clienteId);
+          if (clientPlans.length === 0) return l;
+
+          // Build candidate plans that match each criterion
+          // 2. programRowId
+          if (l.programRowId) {
+            const matchingPlans = clientPlans.filter(p => {
+              let hasRow = false;
+              const checkEx = (ex: any) => { if (ex.programRowId === l.programRowId) hasRow = true; };
+              if (p.giornate) p.giornate.forEach(d => d.esercizi?.forEach(checkEx));
+              if (p.weeks) p.weeks.forEach(wk => wk.giornate?.forEach(d => d.esercizi?.forEach(checkEx)));
+              return hasRow;
+            });
+            if (matchingPlans.length === 1) {
+              return { ...l, planId: matchingPlans[0].id };
+            }
+          }
+
+          // 4. programDayId
+          if (l.programDayId) {
+            const matchingPlans = clientPlans.filter(p => {
+              let hasDay = false;
+              if (p.giornate) p.giornate.forEach(d => { if (d.programDayId === l.programDayId) hasDay = true; });
+              if (p.weeks) p.weeks.forEach(wk => wk.giornate?.forEach(d => { if (d.programDayId === l.programDayId) hasDay = true; }));
+              return hasDay;
+            });
+            if (matchingPlans.length === 1) {
+              return { ...l, planId: matchingPlans[0].id };
+            }
+          }
+
+          // 5. exerciseId, weekIndex e giornata
+          if (l.exerciseId && l.weekIndex !== undefined && l.giornataNome) {
+            const matchingPlans = clientPlans.filter(p => {
+              let hasMatch = false;
+              const checkEx = (ex: any, week: number, dayNome: string) => {
+                if (ex.exerciseId === l.exerciseId && week === l.weekIndex && dayNome.toLowerCase() === l.giornataNome.toLowerCase()) {
+                  hasMatch = true;
+                }
+              };
+              if (p.giornate) p.giornate.forEach(d => d.esercizi?.forEach(ex => checkEx(ex, 1, d.nome)));
+              if (p.weeks) p.weeks.forEach(wk => wk.giornate?.forEach(d => d.esercizi?.forEach(ex => checkEx(ex, wk.weekIndex, d.nome))));
+              return hasMatch;
+            });
+            if (matchingPlans.length === 1) {
+              return { ...l, planId: matchingPlans[0].id };
+            }
+          }
+
+          // 6. nome normalizzato
+          if (l.exerciseNome) {
+            const normName = l.exerciseNome.trim().toLowerCase();
+            const matchingPlans = clientPlans.filter(p => {
+              let hasName = false;
+              const checkEx = (ex: any) => { if (ex.nome && ex.nome.trim().toLowerCase() === normName) hasName = true; };
+              if (p.giornate) p.giornate.forEach(d => d.esercizi?.forEach(checkEx));
+              if (p.weeks) p.weeks.forEach(wk => wk.giornate?.forEach(d => d.esercizi?.forEach(checkEx)));
+              return hasName;
+            });
+            if (matchingPlans.length === 1) {
+              return { ...l, planId: matchingPlans[0].id };
+            }
+          }
+
+          return l;
+        });
+
+        localStorage.setItem('pt_logbook', JSON.stringify(updatedLogs));
+        setLogbook(updatedLogs);
+      }
     }
   }, []);
 
@@ -403,11 +491,21 @@ export default function App() {
     triggerToast(`Scheda duplicata come "${duplicatedPlan.nome}"!`, 'success');
   };
 
-  const handleDeletePlan = (id: string) => {
+  const handleDeletePlan = (id: string, deleteLogs?: boolean) => {
     const target = plans.find(p => p.id === id);
     const updated = plans.filter(p => p.id !== id);
     setPlans(updated);
     localStorage.setItem(STORAGE_KEYS.PLANS, JSON.stringify(updated));
+
+    if (deleteLogs) {
+      const storedLogs = localStorage.getItem('pt_logbook');
+      if (storedLogs) {
+        const allLogs: LogbookEntry[] = JSON.parse(storedLogs);
+        const filteredLogs = allLogs.filter(l => l.planId !== id);
+        localStorage.setItem('pt_logbook', JSON.stringify(filteredLogs));
+      }
+    }
+
     triggerToast(`Scheda "${target ? target.nome : ''}" eliminata definitivamente!`, 'success');
   };
 
@@ -624,10 +722,14 @@ export default function App() {
                 clients={clients}
                 plans={plans}
                 templates={templates}
+                exercises={exercises}
+                logbook={logbook}
                 onUpdateConfig={setConfig}
                 onUpdateClients={setClients}
                 onUpdatePlans={setPlans}
                 onUpdateTemplates={setTemplates}
+                onUpdateExercises={setExercises}
+                onUpdateLogbook={setLogbook}
                 onShowToast={triggerToast}
                 onShowConfirm={triggerConfirm}
               />
