@@ -14,12 +14,23 @@ import {
   Plus, Search, Filter, Dumbbell, Award, Calendar, FileText, Info, PlusCircle, 
   LayoutGrid, X, Link, Unlink, Sparkles, Save, CheckSquare, RotateCcw,
   Star, Video, Clipboard, Layers, RefreshCw, AlertCircle, TrendingUp, HelpCircle,
-  MoreHorizontal
+  MoreHorizontal, Settings
 } from 'lucide-react';
 import { 
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend,
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Cell
 } from 'recharts';
+import {
+  createExerciseGroupId,
+  removeExerciseFromGroup,
+  getGroupMemberLabel,
+  isGroupedExercise,
+  normalizeExerciseGroupType,
+  normalizeExerciseGroupData,
+  DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC,
+  DEFAULT_GROUP_REST_AFTER_ROUND_SEC,
+  DEFAULT_GROUP_ROUNDS
+} from '../utils/exerciseGroupUtils';
 
 const DISTRICT_COLORS: { [key: string]: string } = {
   'Pettorali': '#f97316',          // Arancione vivace
@@ -259,6 +270,33 @@ export default function WorkoutWizard({
   // STEP 3 state: Multi-week structure
   const [weeks, setWeeks] = useState<WorkoutWeek[]>([]);
   const [activeWeekIndex, setActiveWeekIndex] = useState<number>(1); // 1-indexed
+
+  // Superset selection state
+  const [supersetSelectionDayId, setSupersetSelectionDayId] = useState<string | null>(null);
+  const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    setSupersetSelectionDayId(null);
+    setSelectedExerciseIds([]);
+  }, [activeWeekIndex]);
+
+  // Superset settings modal state
+  const [supersetSettingsModalOpen, setSupersetSettingsModalOpen] = useState(false);
+  const [supersetSettingsGroupId, setSupersetSettingsGroupId] = useState<string | null>(null);
+  const [supersetSettingsDayId, setSupersetSettingsDayId] = useState<string | null>(null);
+  const [supersetSettingsHasMismatch, setSupersetSettingsHasMismatch] = useState(false);
+
+  // Modal temporary values
+  const [tempRestBetweenSec, setTempRestBetweenSec] = useState<number | "">(0);
+  const [tempRestAfterSec, setTempRestAfterSec] = useState<number | "">(90);
+  const [tempRounds, setTempRounds] = useState<number | "">(1);
+
+  // Validation error states
+  const [validationErrors, setValidationErrors] = useState<{
+    restBetween?: string;
+    restAfter?: string;
+    rounds?: string;
+  }>({});
 
   // Multi-week extra features
   const [globalModifications, setGlobalModifications] = useState(false);
@@ -1356,22 +1394,194 @@ export default function WorkoutWizard({
   };
 
   // Remove exercise from its group
-  const handleUngroupExercise = (dayId: string, exInstId: string) => {
-    setGiornate(prev => prev.map(day => {
-      if (day.id === dayId) {
+  const handleConfirmSuperset = (dayId: string) => {
+    if (selectedExerciseIds.length !== 2) return;
+
+    const day = giornate.find(d => d.id === dayId);
+    if (!day) return;
+
+    // Filter exercises that are selected, but preserve their relative order in the day
+    const selectedIndexes = day.esercizi
+      .map((ex, idx) => ({ ex, idx }))
+      .filter(item => selectedExerciseIds.includes(item.ex.id))
+      .sort((a, b) => a.idx - b.idx);
+
+    if (selectedIndexes.length !== 2) return;
+
+    const firstItem = selectedIndexes[0];
+    const secondItem = selectedIndexes[1];
+
+    const newGroupId = createExerciseGroupId();
+
+    setGiornate(prev => prev.map(d => {
+      if (d.id === dayId) {
         return {
-          ...day,
-          esercizi: day.esercizi.map(ex => {
-            if (ex.id === exInstId) {
-              const { groupId, groupType, groupRest, ...rest } = ex;
-              return rest as WorkoutExercise;
+          ...d,
+          esercizi: d.esercizi.map((ex) => {
+            if (ex.id === firstItem.ex.id) {
+              return {
+                ...ex,
+                groupId: newGroupId,
+                groupType: 'superset',
+                groupOrder: 1,
+                groupRestBetweenExercisesSec: DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC,
+                groupRestAfterRoundSec: DEFAULT_GROUP_REST_AFTER_ROUND_SEC,
+                groupRounds: DEFAULT_GROUP_ROUNDS
+              };
+            }
+            if (ex.id === secondItem.ex.id) {
+              return {
+                ...ex,
+                groupId: newGroupId,
+                groupType: 'superset',
+                groupOrder: 2,
+                groupRestBetweenExercisesSec: DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC,
+                groupRestAfterRoundSec: DEFAULT_GROUP_REST_AFTER_ROUND_SEC,
+                groupRounds: DEFAULT_GROUP_ROUNDS
+              };
             }
             return ex;
           })
         };
       }
-      return day;
+      return d;
     }));
+
+    setSupersetSelectionDayId(null);
+    setSelectedExerciseIds([]);
+    if (onShowToast) {
+      onShowToast('Superset creato con successo!', 'success');
+    }
+  };
+
+  const handleDissolveSuperset = (dayId: string, groupId: string) => {
+    setGiornate(prev => prev.map(d => {
+      if (d.id === dayId) {
+        return {
+          ...d,
+          esercizi: d.esercizi.map(ex => {
+            if (ex.groupId === groupId) {
+              return removeExerciseFromGroup(ex);
+            }
+            return ex;
+          })
+        };
+      }
+      return d;
+    }));
+    if (onShowToast) {
+      onShowToast('Superset rimosso.', 'success');
+    }
+  };
+
+  const resetSupersetSettingsState = () => {
+    setSupersetSettingsModalOpen(false);
+    setSupersetSettingsGroupId(null);
+    setSupersetSettingsDayId(null);
+    setSupersetSettingsHasMismatch(false);
+    setTempRestBetweenSec(0);
+    setTempRestAfterSec(90);
+    setTempRounds(1);
+    setValidationErrors({});
+  };
+
+  const handleOpenSupersetSettings = (dayId: string, groupId: string) => {
+    const day = giornate.find(d => d.id === dayId);
+    if (!day) return;
+
+    const members = day.esercizi.filter(ex => ex.groupId === groupId);
+    if (members.length < 2) {
+      if (onShowToast) {
+        onShowToast("Un superset deve contenere almeno 2 esercizi per essere modificato.", "error");
+      }
+      return;
+    }
+
+    // Find leader (groupOrder === 1) or fallback to first member
+    const sortedMembers = [...members].sort((a, b) => (a.groupOrder ?? Infinity) - (b.groupOrder ?? Infinity));
+    const leader = sortedMembers.find(m => m.groupOrder === 1) || sortedMembers[0];
+
+    const normalizedLeader = normalizeExerciseGroupData(leader);
+
+    // Check if they have different settings
+    let hasMismatch = false;
+    const firstNormalized = normalizeExerciseGroupData(sortedMembers[0]);
+    for (let i = 1; i < sortedMembers.length; i++) {
+      const norm = normalizeExerciseGroupData(sortedMembers[i]);
+      if (
+        norm.groupRestBetweenExercisesSec !== firstNormalized.groupRestBetweenExercisesSec ||
+        norm.groupRestAfterRoundSec !== firstNormalized.groupRestAfterRoundSec ||
+        norm.groupRounds !== firstNormalized.groupRounds
+      ) {
+        hasMismatch = true;
+        break;
+      }
+    }
+
+    // Set states
+    setSupersetSettingsGroupId(groupId);
+    setSupersetSettingsDayId(dayId);
+    setTempRestBetweenSec(normalizedLeader.groupRestBetweenExercisesSec ?? 0);
+    setTempRestAfterSec(normalizedLeader.groupRestAfterRoundSec ?? 90);
+    setTempRounds(normalizedLeader.groupRounds ?? 1);
+    setSupersetSettingsHasMismatch(hasMismatch);
+    setValidationErrors({});
+    setSupersetSettingsModalOpen(true);
+  };
+
+  const handleSaveSupersetSettings = () => {
+    if (!supersetSettingsDayId || !supersetSettingsGroupId) return;
+
+    // Validation
+    const errors: { restBetween?: string; restAfter?: string; rounds?: string } = {};
+
+    const valBetween = tempRestBetweenSec === "" ? NaN : Number(tempRestBetweenSec);
+    const valAfter = tempRestAfterSec === "" ? NaN : Number(tempRestAfterSec);
+    const valRounds = tempRounds === "" ? NaN : Number(tempRounds);
+
+    if (Number.isNaN(valBetween) || !Number.isInteger(valBetween) || valBetween < 0 || valBetween > 600) {
+      errors.restBetween = "Deve essere un intero tra 0 e 600 secondi.";
+    }
+
+    if (Number.isNaN(valAfter) || !Number.isInteger(valAfter) || valAfter < 0 || valAfter > 900) {
+      errors.restAfter = "Deve essere un intero tra 0 e 900 secondi.";
+    }
+
+    if (Number.isNaN(valRounds) || !Number.isInteger(valRounds) || valRounds < 1 || valRounds > 20) {
+      errors.rounds = "Deve essere un intero tra 1 e 20.";
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setValidationErrors(errors);
+      return;
+    }
+
+    // Update all members of the same superset
+    setGiornate(prev => prev.map(d => {
+      if (d.id === supersetSettingsDayId) {
+        return {
+          ...d,
+          esercizi: d.esercizi.map(ex => {
+            if (ex.groupId === supersetSettingsGroupId) {
+              return {
+                ...ex,
+                groupRestBetweenExercisesSec: valBetween,
+                groupRestAfterRoundSec: valAfter,
+                groupRounds: valRounds
+              };
+            }
+            return ex;
+          })
+        };
+      }
+      return d;
+    }));
+
+    // Reset state & close
+    resetSupersetSettingsState();
+    if (onShowToast) {
+      onShowToast("Impostazioni Superset aggiornate.", "success");
+    }
   };
 
   // Confirm copy day structure to other week/day slot
@@ -2501,85 +2711,134 @@ export default function WorkoutWizard({
 
                   {/* Actions buttons */}
                   <div className="flex flex-wrap items-center gap-2">
-                    {/* Aggiungi esercizio */}
-                    <button
-                      type="button"
-                      onClick={() => openExercisePicker(day.id)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm text-neutral-950 hover:opacity-90"
-                      style={{ backgroundColor: config.primaryColor }}
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Aggiungi esercizio</span>
-                    </button>
-
-                    {/* Duplica */}
-                    <button
-                      type="button"
-                      onClick={() => handleDuplicateDay(day.id)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-white/60 hover:text-white hover:bg-neutral-900 transition-all text-xs cursor-pointer"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                      <span>Duplica</span>
-                    </button>
-
-                    {/* Copia */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (copyingDayId === day.id) {
-                          setCopyingDayId(null);
-                        } else {
-                          setCopyingDayId(day.id);
-                          setCopyTargetWeek(activeWeekIndex);
-                          setCopyTargetDayIdx(dIdx);
-                        }
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-white/60 hover:text-white hover:bg-neutral-900 transition-all text-xs cursor-pointer"
-                    >
-                      <Layers className="w-3.5 h-3.5" />
-                      <span>{copyingDayId === day.id ? 'Annulla Copia' : 'Copia'}</span>
-                    </button>
-
-                    {/* Altre azioni dropdown */}
-                    <div className="relative">
-                      <button
-                        type="button"
-                        onClick={() => setActiveActionMenuExId(activeActionMenuExId === `day_${day.id}` ? null : `day_${day.id}`)}
-                        className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-white/60 hover:text-white hover:bg-neutral-900 transition-all text-xs cursor-pointer"
-                      >
-                        <MoreHorizontal className="w-3.5 h-3.5" />
-                        <span>Altre azioni</span>
-                      </button>
-                      {activeActionMenuExId === `day_${day.id}` && (
-                        <div className="absolute right-0 mt-2 w-48 bg-neutral-900 border border-white/10 rounded-xl shadow-2xl z-30 overflow-hidden py-1 text-left">
+                    {supersetSelectionDayId === day.id ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled={selectedExerciseIds.length !== 2}
+                          onClick={() => handleConfirmSuperset(day.id)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm text-neutral-950 bg-green-500 hover:bg-green-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Conferma Superset</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSupersetSelectionDayId(null);
+                            setSelectedExerciseIds([]);
+                          }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-white/60 hover:text-white hover:bg-neutral-900 transition-all text-xs cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span>Annulla</span>
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {/* Only show "Crea Superset" if we are not in selection mode on another day and day has >= 2 exercises */}
+                        {(supersetSelectionDayId === null || supersetSelectionDayId === day.id) && day.esercizi.length >= 2 && (
                           <button
                             type="button"
                             onClick={() => {
-                              handleClearDayExercises(day.id);
-                              setActiveActionMenuExId(null);
+                              setSupersetSelectionDayId(day.id);
+                              setSelectedExerciseIds([]);
                             }}
-                            className="w-full px-4 py-2 text-xs text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-2"
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-neutral-800 border border-white/10 text-white/80 hover:text-white hover:bg-neutral-700 transition-all text-xs cursor-pointer"
                           >
-                            <Trash2 className="w-3.5 h-3.5 text-red-500/60" />
-                            <span>Svuota giornata</span>
+                            <Link className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                            <span>Crea Superset</span>
                           </button>
+                        )}
+
+                        {/* Aggiungi esercizio */}
+                        {supersetSelectionDayId === null && (
+                          <button
+                            type="button"
+                            onClick={() => openExercisePicker(day.id)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm text-neutral-950 hover:opacity-90"
+                            style={{ backgroundColor: config.primaryColor }}
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Aggiungi esercizio</span>
+                          </button>
+                        )}
+
+                        {/* Duplica */}
+                        {supersetSelectionDayId === null && (
+                          <button
+                            type="button"
+                            onClick={() => handleDuplicateDay(day.id)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-white/60 hover:text-white hover:bg-neutral-900 transition-all text-xs cursor-pointer"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Duplica</span>
+                          </button>
+                        )}
+
+                        {/* Copia */}
+                        {supersetSelectionDayId === null && (
                           <button
                             type="button"
                             onClick={() => {
-                              if (window.confirm('Sei sicuro di voler eliminare questa giornata?')) {
-                                setGiornate(prev => prev.filter(d => d.id !== day.id));
+                              if (copyingDayId === day.id) {
+                                setCopyingDayId(null);
+                              } else {
+                                setCopyingDayId(day.id);
+                                setCopyTargetWeek(activeWeekIndex);
+                                setCopyTargetDayIdx(dIdx);
                               }
-                              setActiveActionMenuExId(null);
                             }}
-                            className="w-full px-4 py-2 text-xs text-red-400 hover:bg-white/5 flex items-center gap-2"
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-white/60 hover:text-white hover:bg-neutral-900 transition-all text-xs cursor-pointer"
                           >
-                            <Trash2 className="w-3.5 h-3.5 text-red-500" />
-                            <span>Elimina giornata</span>
+                            <Layers className="w-3.5 h-3.5" />
+                            <span>{copyingDayId === day.id ? 'Annulla Copia' : 'Copia'}</span>
                           </button>
-                        </div>
-                      )}
-                    </div>
+                        )}
 
+                        {/* Altre azioni dropdown */}
+                        {supersetSelectionDayId === null && (
+                          <div className="relative">
+                            <button
+                              type="button"
+                              onClick={() => setActiveActionMenuExId(activeActionMenuExId === `day_${day.id}` ? null : `day_${day.id}`)}
+                              className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-white/60 hover:text-white hover:bg-neutral-900 transition-all text-xs cursor-pointer"
+                            >
+                              <MoreHorizontal className="w-3.5 h-3.5" />
+                              <span>Altre azioni</span>
+                            </button>
+                            {activeActionMenuExId === `day_${day.id}` && (
+                              <div className="absolute right-0 mt-2 w-48 bg-neutral-900 border border-white/10 rounded-xl shadow-2xl z-30 overflow-hidden py-1 text-left">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleClearDayExercises(day.id);
+                                    setActiveActionMenuExId(null);
+                                  }}
+                                  className="w-full px-4 py-2 text-xs text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-2"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5 text-red-500/60" />
+                                  <span>Svuota giornata</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (window.confirm('Sei sicuro di voler eliminare questa giornata?')) {
+                                      setGiornate(prev => prev.filter(d => d.id !== day.id));
+                                    }
+                                    setActiveActionMenuExId(null);
+                                  }}
+                                  className="w-full px-4 py-2 text-xs text-red-400 hover:bg-white/5 flex items-center gap-2"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                                  <span>Elimina giornata</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -2732,121 +2991,183 @@ export default function WorkoutWizard({
                       </tr>
                     </thead>
                     <tbody>
-                      {day.esercizi.map((ex, exIdx) => {
-                        const isInGroup = !!ex.groupId;
-                        const isGroupLeader = isInGroup && (exIdx === 0 || day.esercizi[exIdx - 1]?.groupId !== ex.groupId);
-                        
-                        return (
-                          <tr 
-                            key={ex.id} 
-                            className={`border-b border-white/5 hover:bg-white/[0.02] transition-colors ${isInGroup ? 'bg-[#CCFF00]/5' : ''}`}
-                            style={{ backgroundColor: isInGroup ? `${config.primaryColor}05` : undefined }}
-                          >
-                            {/* Number Col */}
-                            <td 
-                              className="sticky left-0 z-10 bg-neutral-950 border-r border-white/5 py-1 px-1.5 text-center text-xs font-mono font-bold text-white/50 relative"
-                              style={{ left: '0px', width: '40px', minWidth: '40px' }}
-                            >
-                              {isInGroup && (
-                                <span className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: config.primaryColor }} />
-                              )}
-                              {exIdx + 1}
-                            </td>
+                      {(() => {
+                        const uniqueGroupIds: string[] = [];
+                        day.esercizi.forEach(e => {
+                          if (e.groupId && typeof e.groupId === 'string' && e.groupId.trim() !== '') {
+                            const normalizedType = normalizeExerciseGroupType(e.groupType);
+                            if (normalizedType && !uniqueGroupIds.includes(e.groupId)) {
+                              uniqueGroupIds.push(e.groupId);
+                            }
+                          }
+                        });
 
-                            {/* Tipo Col */}
-                            <td 
-                              className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-1"
-                              style={{ left: '40px', width: '60px', minWidth: '60px' }}
-                            >
-                              <div className="bg-black/40 px-1 py-0 rounded border border-white/5 hover:border-white/25 transition-all">
-                                <select 
-                                  value={ex.indicazioniEsecuzione || 'Base'} 
-                                  onChange={(e) => handleUpdateExParam(day.id, ex.id, 'indicazioniEsecuzione', e.target.value)}
-                                  className="bg-transparent text-[9px] font-black text-white/80 uppercase focus:outline-none cursor-pointer w-full text-center h-5"
-                                >
-                                  <option value="Base" className="bg-neutral-950 text-white font-bold">Base</option>
-                                  <option value="Compl." className="bg-neutral-950 text-white font-bold">Compl.</option>
-                                  <option value="Isol." className="bg-neutral-950 text-white font-bold">Isol.</option>
-                                </select>
-                              </div>
-                            </td>
+                        return day.esercizi.map((ex, exIdx) => {
+                          const isInGroup = !!ex.groupId;
+                          const isGroupLeader = isInGroup && (exIdx === 0 || day.esercizi[exIdx - 1]?.groupId !== ex.groupId);
+                          
+                          const groupIndex = ex.groupId ? uniqueGroupIds.indexOf(ex.groupId) : -1;
+                          const memberLabel = groupIndex !== -1 && ex.groupOrder !== undefined ? getGroupMemberLabel(groupIndex, ex.groupOrder) : '';
 
-                            {/* Distretto Col */}
-                            <td 
-                              className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-1"
-                              style={{ left: '100px', width: '85px', minWidth: '85px' }}
+                          return (
+                            <tr 
+                              key={ex.id} 
+                              className={`border-b border-white/5 hover:bg-white/[0.02] transition-colors ${isInGroup ? 'bg-[#CCFF00]/5' : ''}`}
+                              style={{ backgroundColor: isInGroup ? `${config.primaryColor}05` : undefined }}
                             >
-                              <div className="bg-black/40 px-1 py-0 rounded border border-white/5 hover:border-white/25 transition-all">
-                                <select 
-                                  value={ex.distrettoMuscolare} 
-                                  onChange={(e) => handleUpdateExParam(day.id, ex.id, 'distrettoMuscolare', e.target.value)}
-                                  className="bg-transparent text-[9px] font-bold text-white/60 focus:outline-none cursor-pointer w-full text-center h-5"
-                                >
-                                  <option value="Pettorali" className="bg-neutral-950 text-white">Pettorali</option>
-                                  <option value="Dorso" className="bg-neutral-950 text-white">Dorso</option>
-                                  <option value="Spalle" className="bg-neutral-950 text-white">Spalle</option>
-                                  <option value="Deltoidi anteriori" className="bg-neutral-950 text-white">D. ant.</option>
-                                  <option value="Deltoidi laterali" className="bg-neutral-950 text-white">D. lat.</option>
-                                  <option value="Deltoidi posteriori" className="bg-neutral-950 text-white">D. post.</option>
-                                  <option value="Bicipiti" className="bg-neutral-950 text-white">Bicipiti</option>
-                                  <option value="Tricipiti" className="bg-neutral-950 text-white">Tricipiti</option>
-                                  <option value="Quadricipiti" className="bg-neutral-950 text-white">Quadricipiti</option>
-                                  <option value="Femorali" className="bg-neutral-950 text-white">Femorali</option>
-                                  <option value="Glutei" className="bg-neutral-950 text-white">Glutei</option>
-                                  <option value="Adduttori" className="bg-neutral-950 text-white">Adduttori</option>
-                                  <option value="Abduttori" className="bg-neutral-950 text-white">Abduttori</option>
-                                  <option value="Polpacci" className="bg-neutral-950 text-white">Polpacci</option>
-                                  <option value="Addome" className="bg-neutral-950 text-white">Addome</option>
-                                </select>
-                              </div>
-                            </td>
+                              {/* Number Col */}
+                              <td 
+                                className="sticky left-0 z-10 bg-neutral-950 border-r border-white/5 py-1 px-1.5 text-center text-xs font-mono font-bold text-white/50 relative"
+                                style={{ left: '0px', width: '40px', minWidth: '40px' }}
+                              >
+                                {isInGroup && (
+                                  <span className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: config.primaryColor }} />
+                                )}
+                                {exIdx + 1}
+                              </td>
 
-                            {/* Progressione Col */}
-                            <td 
-                              className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-1"
-                              style={{ left: '185px', width: '100px', minWidth: '100px' }}
-                            >
-                              <div className="bg-black/40 px-1 py-0 rounded border border-white/5 hover:border-white/25 transition-all">
-                                <select
-                                  value={ex.tecnicaIntensita || 'Nessuna'}
-                                  onChange={(e) => handleUpdateExParam(day.id, ex.id, 'tecnicaIntensita', e.target.value)}
-                                  className="bg-transparent text-[9px] font-bold text-white/80 focus:outline-none cursor-pointer w-full text-center h-5"
-                                >
-                                  <option value="Nessuna" className="bg-neutral-950 text-white">Standard</option>
-                                  <option value="Top set" className="bg-neutral-950 text-white">Top set</option>
-                                  <option value="Back-off" className="bg-neutral-950 text-white">Back-off</option>
-                                  <option value="Drop set" className="bg-neutral-950 text-white">Drop set</option>
-                                  <option value="Rest pause" className="bg-neutral-950 text-white">Rest pause</option>
-                                  <option value="Myo-reps" className="bg-neutral-950 text-white">Myo-reps</option>
-                                  <option value="Cluster set" className="bg-neutral-950 text-white">Cluster set</option>
-                                </select>
-                              </div>
-                            </td>
-
-                            {/* Esercizio Col */}
-                            <td 
-                              className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-2"
-                              style={{ left: '285px', width: '175px', minWidth: '175px' }}
-                            >
-                              <div className="flex flex-col gap-1">
-                                <div className="flex items-center gap-1 font-extrabold text-white text-xs" title={ex.nome}>
-                                  <span className="line-clamp-2 leading-tight break-words">{ex.nome}</span>
-                                  {ex.linkVideo && (
-                                    <a href={ex.linkVideo} target="_blank" rel="noreferrer" className="text-red-400 hover:text-red-300 ml-0.5 shrink-0">
-                                      <Video className="w-3 h-3" />
-                                    </a>
-                                  )}
+                              {/* Tipo Col */}
+                              <td 
+                                className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-1"
+                                style={{ left: '40px', width: '60px', minWidth: '60px' }}
+                              >
+                                <div className="bg-black/40 px-1 py-0 rounded border border-white/5 hover:border-white/25 transition-all">
+                                  <select 
+                                    value={ex.indicazioniEsecuzione || 'Base'} 
+                                    onChange={(e) => handleUpdateExParam(day.id, ex.id, 'indicazioniEsecuzione', e.target.value)}
+                                    className="bg-transparent text-[9px] font-black text-white/80 uppercase focus:outline-none cursor-pointer w-full text-center h-5"
+                                  >
+                                    <option value="Base" className="bg-neutral-950 text-white font-bold">Base</option>
+                                    <option value="Compl." className="bg-neutral-950 text-white font-bold">Compl.</option>
+                                    <option value="Isol." className="bg-neutral-950 text-white font-bold">Isol.</option>
+                                  </select>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenBlocksManager(day.id, ex.id)}
-                                  className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[9px] font-bold text-white/60 hover:text-white transition-all cursor-pointer border border-white/5 w-fit"
-                                >
-                                  <Layers className="w-2.5 h-2.5 text-[#CCFF00]" style={{ color: config.primaryColor }} />
-                                  <span>{ex.blocks && ex.blocks.length > 0 ? `Blocchi (${ex.blocks.length})` : 'Gestisci blocchi'}</span>
-                                </button>
-                              </div>
-                            </td>
+                              </td>
+
+                              {/* Distretto Col */}
+                              <td 
+                                className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-1"
+                                style={{ left: '100px', width: '85px', minWidth: '85px' }}
+                              >
+                                <div className="bg-black/40 px-1 py-0 rounded border border-white/5 hover:border-white/25 transition-all">
+                                  <select 
+                                    value={ex.distrettoMuscolare} 
+                                    onChange={(e) => handleUpdateExParam(day.id, ex.id, 'distrettoMuscolare', e.target.value)}
+                                    className="bg-transparent text-[9px] font-bold text-white/60 focus:outline-none cursor-pointer w-full text-center h-5"
+                                  >
+                                    <option value="Pettorali" className="bg-neutral-950 text-white">Pettorali</option>
+                                    <option value="Dorso" className="bg-neutral-950 text-white">Dorso</option>
+                                    <option value="Spalle" className="bg-neutral-950 text-white">Spalle</option>
+                                    <option value="Deltoidi anteriori" className="bg-neutral-950 text-white">D. ant.</option>
+                                    <option value="Deltoidi laterali" className="bg-neutral-950 text-white">D. lat.</option>
+                                    <option value="Deltoidi posteriori" className="bg-neutral-950 text-white">D. post.</option>
+                                    <option value="Bicipiti" className="bg-neutral-950 text-white">Bicipiti</option>
+                                    <option value="Tricipiti" className="bg-neutral-950 text-white">Tricipiti</option>
+                                    <option value="Quadricipiti" className="bg-neutral-950 text-white">Quadricipiti</option>
+                                    <option value="Femorali" className="bg-neutral-950 text-white">Femorali</option>
+                                    <option value="Glutei" className="bg-neutral-950 text-white">Glutei</option>
+                                    <option value="Adduttori" className="bg-neutral-950 text-white">Adduttori</option>
+                                    <option value="Abduttori" className="bg-neutral-950 text-white">Abduttori</option>
+                                    <option value="Polpacci" className="bg-neutral-950 text-white">Polpacci</option>
+                                    <option value="Addome" className="bg-neutral-950 text-white">Addome</option>
+                                  </select>
+                                </div>
+                              </td>
+
+                              {/* Progressione Col */}
+                              <td 
+                                className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-1"
+                                style={{ left: '185px', width: '100px', minWidth: '100px' }}
+                              >
+                                <div className="bg-black/40 px-1 py-0 rounded border border-white/5 hover:border-white/25 transition-all">
+                                  <select
+                                    value={ex.tecnicaIntensita || 'Nessuna'}
+                                    onChange={(e) => handleUpdateExParam(day.id, ex.id, 'tecnicaIntensita', e.target.value)}
+                                    className="bg-transparent text-[9px] font-bold text-white/80 focus:outline-none cursor-pointer w-full text-center h-5"
+                                  >
+                                    <option value="Nessuna" className="bg-neutral-950 text-white">Standard</option>
+                                    <option value="Top set" className="bg-neutral-950 text-white">Top set</option>
+                                    <option value="Back-off" className="bg-neutral-950 text-white">Back-off</option>
+                                    <option value="Drop set" className="bg-neutral-950 text-white">Drop set</option>
+                                    <option value="Rest pause" className="bg-neutral-950 text-white">Rest pause</option>
+                                    <option value="Myo-reps" className="bg-neutral-950 text-white">Myo-reps</option>
+                                    <option value="Cluster set" className="bg-neutral-950 text-white">Cluster set</option>
+                                  </select>
+                                </div>
+                              </td>
+
+                              {/* Esercizio Col */}
+                              <td 
+                                className="sticky z-10 bg-neutral-950 border-r border-white/5 py-1 px-2"
+                                style={{ left: '285px', width: '175px', minWidth: '175px' }}
+                              >
+                                <div className="flex flex-col gap-1">
+                                  {supersetSelectionDayId === day.id && (
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedExerciseIds.includes(ex.id)}
+                                        disabled={isInGroup || (selectedExerciseIds.length >= 2 && !selectedExerciseIds.includes(ex.id))}
+                                        onChange={(e) => {
+                                          if (e.target.checked) {
+                                            if (selectedExerciseIds.length < 2) {
+                                              setSelectedExerciseIds(prev => [...prev, ex.id]);
+                                            }
+                                          } else {
+                                            setSelectedExerciseIds(prev => prev.filter(id => id !== ex.id));
+                                          }
+                                        }}
+                                        className="h-3.5 w-3.5 rounded border-white/20 bg-black text-[#CCFF00] focus:ring-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                        style={{ accentColor: config.primaryColor }}
+                                        aria-label={`Seleziona ${ex.nome} per superset`}
+                                      />
+                                      {isInGroup && (
+                                        <span className="text-[10px] text-red-400 font-medium">
+                                          Questo esercizio appartiene già a un gruppo.
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  <div className="flex items-center gap-1 font-extrabold text-white text-xs" title={ex.nome}>
+                                    {groupIndex !== -1 && (
+                                      <div className="flex flex-wrap items-center gap-1 mr-1 shrink-0">
+                                        <span className="px-1 py-0.5 rounded text-[9px] font-mono font-black text-neutral-950" style={{ backgroundColor: config.primaryColor }}>
+                                          {memberLabel}
+                                        </span>
+                                        <span className="px-1 py-0.5 rounded text-[8px] font-black uppercase text-white/90 border" style={{ borderColor: `${config.primaryColor}50`, backgroundColor: `${config.primaryColor}15` }}>
+                                          Superset
+                                        </span>
+                                        {normalizeExerciseGroupType(ex.groupType) === 'superset' && ex.groupOrder === 1 && (() => {
+                                          const normEx = normalizeExerciseGroupData(ex);
+                                          const restBetween = normEx.groupRestBetweenExercisesSec ?? 0;
+                                          const restAfter = normEx.groupRestAfterRoundSec ?? 90;
+                                          const rounds = normEx.groupRounds ?? 1;
+                                          return (
+                                            <span className="text-[9px] text-[#CCFF00]/90 font-bold bg-neutral-900 border border-[#CCFF00]/25 px-1.5 py-0.5 rounded-md" style={{ color: config.primaryColor, borderColor: `${config.primaryColor}40` }}>
+                                              {restBetween}s tra esercizi • {restAfter}s dopo • {rounds} {rounds === 1 ? 'giro' : 'giri'}
+                                            </span>
+                                          );
+                                        })()}
+                                      </div>
+                                    )}
+                                    <span className="line-clamp-2 leading-tight break-words">{ex.nome}</span>
+                                    {ex.linkVideo && (
+                                      <a href={ex.linkVideo} target="_blank" rel="noreferrer" className="text-red-400 hover:text-red-300 ml-0.5 shrink-0">
+                                        <Video className="w-3 h-3" />
+                                      </a>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenBlocksManager(day.id, ex.id)}
+                                    className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[9px] font-bold text-white/60 hover:text-white transition-all cursor-pointer border border-white/5 w-fit"
+                                  >
+                                    <Layers className="w-2.5 h-2.5 text-[#CCFF00]" style={{ color: config.primaryColor }} />
+                                    <span>{ex.blocks && ex.blocks.length > 0 ? `Blocchi (${ex.blocks.length})` : 'Gestisci blocchi'}</span>
+                                  </button>
+                                </div>
+                              </td>
 
                             {/* TUT Col */}
                             <td 
@@ -3075,17 +3396,31 @@ export default function WorkoutWizard({
                                       <span>Unisci in Super Set</span>
                                     </button>
                                   )}
-                                  {isInGroup && (
+                                  {isInGroup && ex.groupId && (
                                     <button
                                       type="button"
                                       onClick={() => {
-                                        handleUngroupExercise(day.id, ex.id);
+                                        handleDissolveSuperset(day.id, ex.groupId!);
                                         setActiveActionMenuExId(null);
                                       }}
                                       className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5"
                                     >
                                       <Unlink className="w-3.5 h-3.5" />
-                                      <span>Separa Super Set</span>
+                                      <span>Sciogli Superset</span>
+                                    </button>
+                                  )}
+
+                                  {ex.groupId && normalizeExerciseGroupType(ex.groupType) === 'superset' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        handleOpenSupersetSettings(day.id, ex.groupId!);
+                                        setActiveActionMenuExId(null);
+                                      }}
+                                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
+                                    >
+                                      <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                                      <span>Impostazioni Superset</span>
                                     </button>
                                   )}
 
@@ -3146,7 +3481,8 @@ export default function WorkoutWizard({
 
                           </tr>
                         );
-                      })}
+                      });
+                    })()}
                       
                       {/* --- RIGHE FINALI: TOTALE SERIE --- */}
                       <tr className="bg-neutral-950 font-bold border-t border-white/10">
@@ -3702,6 +4038,124 @@ export default function WorkoutWizard({
                 className="w-full py-2 px-4 rounded-xl text-white/40 hover:text-white text-xs transition-all cursor-pointer mt-1"
               >
                 Annulla
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= SUPERSET SETTINGS MODAL ================= */}
+      {supersetSettingsModalOpen && (
+        <div id="superset-settings-modal" className="fixed inset-0 z-50 bg-neutral-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-[#121212] border border-white/10 rounded-2xl overflow-hidden shadow-2xl p-6 flex flex-col gap-4 text-left">
+            <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+              <Settings className="w-5 h-5 text-[#CCFF00]" style={{ color: config.primaryColor }} />
+              <h3 className="font-extrabold text-white text-base">Impostazioni Superset</h3>
+            </div>
+
+            {supersetSettingsHasMismatch && (
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 flex items-start gap-2 text-amber-400">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <p className="text-[11px] leading-relaxed font-medium">
+                  Le impostazioni del gruppo non erano uniformi. Il salvataggio applicherà gli stessi valori a tutti i membri.
+                </p>
+              </div>
+            )}
+
+            <div className="space-y-4 py-2">
+              {/* Recupero tra gli esercizi */}
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-white/60 uppercase tracking-wider">
+                  Recupero tra gli esercizi (secondi)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="600"
+                  step="1"
+                  value={tempRestBetweenSec}
+                  onChange={(e) => {
+                    const val = e.target.value === "" ? "" : Number(e.target.value);
+                    setTempRestBetweenSec(val);
+                  }}
+                  className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-[#CCFF00]/50 transition-all"
+                  style={{ focusBorderColor: config.primaryColor }}
+                />
+                {validationErrors.restBetween && (
+                  <p className="text-[10px] text-red-400 font-bold mt-1">
+                    {validationErrors.restBetween}
+                  </p>
+                )}
+              </div>
+
+              {/* Recupero dopo il completamento del Superset */}
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-white/60 uppercase tracking-wider">
+                  Recupero dopo il giro (secondi)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="900"
+                  step="1"
+                  value={tempRestAfterSec}
+                  onChange={(e) => {
+                    const val = e.target.value === "" ? "" : Number(e.target.value);
+                    setTempRestAfterSec(val);
+                  }}
+                  className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-[#CCFF00]/50 transition-all"
+                  style={{ focusBorderColor: config.primaryColor }}
+                />
+                {validationErrors.restAfter && (
+                  <p className="text-[10px] text-red-400 font-bold mt-1">
+                    {validationErrors.restAfter}
+                  </p>
+                )}
+              </div>
+
+              {/* Numero di giri */}
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-white/60 uppercase tracking-wider">
+                  Numero di giri
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="20"
+                  step="1"
+                  value={tempRounds}
+                  onChange={(e) => {
+                    const val = e.target.value === "" ? "" : Number(e.target.value);
+                    setTempRounds(val);
+                  }}
+                  className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-[#CCFF00]/50 transition-all"
+                  style={{ focusBorderColor: config.primaryColor }}
+                />
+                {validationErrors.rounds && (
+                  <p className="text-[10px] text-red-400 font-bold mt-1">
+                    {validationErrors.rounds}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="flex items-center gap-2 mt-2 pt-3 border-t border-white/5">
+              <button
+                type="button"
+                onClick={resetSupersetSettingsState}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 text-white font-bold text-xs transition-all cursor-pointer text-center"
+              >
+                Annulla
+              </button>
+              
+              <button
+                type="button"
+                onClick={handleSaveSupersetSettings}
+                className="flex-1 py-2.5 px-4 rounded-xl font-bold text-xs transition-all cursor-pointer text-center text-neutral-950 hover:opacity-90"
+                style={{ backgroundColor: config.primaryColor }}
+              >
+                Salva
               </button>
             </div>
           </div>

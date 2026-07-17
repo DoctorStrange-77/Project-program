@@ -10,6 +10,16 @@ export const DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC = 0;
 export const DEFAULT_GROUP_REST_AFTER_ROUND_SEC = 90;
 export const DEFAULT_GROUP_ROUNDS = 1;
 
+// 1. TIPI DI GRUPPO VALIDI
+export const VALID_EXERCISE_GROUP_TYPES: ExerciseGroupType[] = [
+  'superset',
+  'compound_set',
+  'triset',
+  'giant_set',
+  'jumpset',
+  'circuit'
+];
+
 export interface ExerciseGroup {
   groupId: string;
   groupType: ExerciseGroupType;
@@ -17,6 +27,21 @@ export interface ExerciseGroup {
   groupRestBetweenExercisesSec: number;
   groupRestAfterRoundSec: number;
   groupRounds: number;
+}
+
+/**
+ * 2. NORMALIZZAZIONE DEL TIPO
+ */
+export function normalizeExerciseGroupType(value: any): ExerciseGroupType | undefined {
+  if (value === undefined || value === null) return undefined;
+  const lower = String(value).toLowerCase().trim();
+  if (lower === 'superset') return 'superset';
+  if (lower === 'compound_set' || lower === 'compound set') return 'compound_set';
+  if (lower === 'triset') return 'triset';
+  if (lower === 'giant_set' || lower === 'giant set') return 'giant_set';
+  if (lower === 'jumpset') return 'jumpset';
+  if (lower === 'circuit' || lower === 'circuito') return 'circuit';
+  return undefined;
 }
 
 /**
@@ -30,29 +55,12 @@ export interface ExerciseGroup {
 export function normalizeExerciseGroupData(exercise: WorkoutExercise): WorkoutExercise {
   if (!exercise) return exercise;
 
-  let groupType = exercise.groupType;
-  if (groupType) {
-    const lower = String(groupType).toLowerCase().trim();
-    if (lower === 'superset') {
-      groupType = 'superset';
-    } else if (lower === 'triset') {
-      groupType = 'triset';
-    } else if (lower === 'giant set' || lower === 'giant_set') {
-      groupType = 'giant_set';
-    } else if (lower === 'jumpset') {
-      groupType = 'jumpset';
-    } else if (lower === 'circuito' || lower === 'circuit') {
-      groupType = 'circuit';
-    } else if (lower === 'compound set' || lower === 'compound_set') {
-      groupType = 'compound_set';
-    }
-  }
-
-  const hasGroup = !!(exercise.groupId && groupType);
+  const groupType = normalizeExerciseGroupType(exercise.groupType);
+  const hasGroup = !!(exercise.groupId && exercise.groupId.trim() !== '' && groupType);
 
   return {
     ...exercise,
-    groupType: groupType as ExerciseGroupType | undefined,
+    groupType,
     groupRestBetweenExercisesSec: hasGroup 
       ? (exercise.groupRestBetweenExercisesSec ?? DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC) 
       : exercise.groupRestBetweenExercisesSec,
@@ -66,17 +74,17 @@ export function normalizeExerciseGroupData(exercise: WorkoutExercise): WorkoutEx
 }
 
 /**
- * Restituisce true soltanto quando groupId e groupType sono validi.
+ * Restituisce true soltanto quando:
+ * - groupId è una stringa non vuota;
+ * - groupType viene riconosciuto da normalizeExerciseGroupType.
  */
 export function isGroupedExercise(exercise: any): boolean {
   if (!exercise) return false;
   const groupId = exercise.groupId;
-  const groupType = exercise.groupType;
-  if (!groupId || typeof groupId !== 'string' || groupId.trim() === '') return false;
-  if (!groupType) return false;
-  
-  const validTypes: string[] = ['superset', 'compound_set', 'triset', 'giant_set', 'jumpset', 'circuit'];
-  return validTypes.includes(String(groupType).toLowerCase().trim());
+  if (typeof groupId !== 'string' || groupId.trim() === '') return false;
+  const groupType = normalizeExerciseGroupType(exercise.groupType);
+  if (groupType === undefined) return false;
+  return VALID_EXERCISE_GROUP_TYPES.includes(groupType);
 }
 
 /**
@@ -110,7 +118,7 @@ export function getExerciseGroups(exercises: WorkoutExercise[]): ExerciseGroup[]
     });
 
     const leader = sortedMembers[0];
-    const groupType = String(leader.groupType).toLowerCase().trim() as ExerciseGroupType;
+    const groupType = normalizeExerciseGroupType(leader.groupType)!;
     const groupRestBetweenExercisesSec = leader.groupRestBetweenExercisesSec ?? DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC;
     const groupRestAfterRoundSec = leader.groupRestAfterRoundSec ?? leader.groupRest ?? DEFAULT_GROUP_REST_AFTER_ROUND_SEC;
     const groupRounds = leader.groupRounds ?? DEFAULT_GROUP_ROUNDS;
@@ -179,29 +187,46 @@ export function validateExerciseGroup(
 ): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
 
+  // 4. VALIDAZIONE DEL TIPO RICEVUTO
+  const normalizedType = normalizeExerciseGroupType(groupType);
+  if (!normalizedType) {
+    errors.push('Tipologia del gruppo non valida.');
+  }
+
   if (!members || members.length === 0) {
     errors.push('Il gruppo non contiene esercizi.');
     return { valid: false, errors };
   }
 
   const count = members.length;
-  const normalizedType = String(groupType).toLowerCase().trim() as ExerciseGroupType;
 
-  // Dimensioni minime/esatte
-  if (normalizedType === 'superset' && count < 2) {
-    errors.push('Un superset deve contenere almeno 2 esercizi.');
-  } else if (normalizedType === 'compound_set' && count < 2) {
-    errors.push('Un compound set deve contenere almeno 2 esercizi.');
-  } else if (normalizedType === 'jumpset' && count < 2) {
-    errors.push('Un jumpset deve contenere almeno 2 esercizi.');
-  } else if (normalizedType === 'triset' && count !== 3) {
-    errors.push('Un triset deve contenere esattamente 3 esercizi.');
-  } else if (normalizedType === 'giant_set' && count < 4) {
-    errors.push('Un giant set deve contenere almeno 4 esercizi.');
-  } else if (normalizedType === 'circuit' && count < 2) {
-    errors.push('Un circuito deve contenere almeno 2 esercizi.');
+  if (normalizedType) {
+    // Dimensioni minime/esatte
+    if (normalizedType === 'superset' && count < 2) {
+      errors.push('Un superset deve contenere almeno 2 esercizi.');
+    } else if (normalizedType === 'compound_set' && count < 2) {
+      errors.push('Un compound set deve contenere almeno 2 esercizi.');
+    } else if (normalizedType === 'jumpset' && count < 2) {
+      errors.push('Un jumpset deve contenere almeno 2 esercizi.');
+    } else if (normalizedType === 'triset' && count !== 3) {
+      errors.push('Un triset deve contenere esattamente 3 esercizi.');
+    } else if (normalizedType === 'giant_set' && count < 4) {
+      errors.push('Un giant set deve contenere almeno 4 esercizi.');
+    } else if (normalizedType === 'circuit' && count < 2) {
+      errors.push('Un circuito deve contenere almeno 2 esercizi.');
+    }
   }
 
+  // 6. groupId COMUNE
+  let refGroupId: string | null = null;
+  for (const m of members) {
+    if (m.groupId && typeof m.groupId === 'string' && m.groupId.trim() !== '') {
+      refGroupId = m.groupId;
+      break;
+    }
+  }
+
+  let hasGroupIdMismatch = false;
   const ordersSet = new Set<number>();
   let hasDuplicateOrder = false;
 
@@ -211,6 +236,18 @@ export function validateExerciseGroup(
     // groupId presente
     if (!member.groupId || typeof member.groupId !== 'string' || member.groupId.trim() === '') {
       errors.push(`${prefix}groupId mancante o non valido.`);
+    } else if (refGroupId && member.groupId !== refGroupId) {
+      hasGroupIdMismatch = true;
+    }
+
+    // 5. groupType OBBLIGATORIO PER OGNI MEMBRO
+    const memberType = normalizeExerciseGroupType(member.groupType);
+    if (!member.groupType) {
+      errors.push(`${prefix}groupType assente.`);
+    } else if (!memberType) {
+      errors.push(`${prefix}groupType non riconosciuto.`);
+    } else if (normalizedType && memberType !== normalizedType) {
+      errors.push(`${prefix}ha un groupType differente rispetto al gruppo (${memberType || member.groupType} vs ${normalizedType}).`);
     }
 
     // groupOrder intero e maggiore o uguale a 1
@@ -249,15 +286,66 @@ export function validateExerciseGroup(
         errors.push(`${prefix}groupRounds deve essere un intero maggiore o uguale a 1.`);
       }
     }
-
-    // stesso groupType per tutti i membri
-    if (member.groupType && String(member.groupType).toLowerCase().trim() !== normalizedType) {
-      errors.push(`${prefix}ha un groupType differente rispetto al gruppo (${member.groupType} vs ${groupType}).`);
-    }
   });
+
+  if (hasGroupIdMismatch) {
+    errors.push('Gli esercizi del gruppo devono condividere lo stesso groupId.');
+  }
 
   if (hasDuplicateOrder) {
     errors.push('Ci sono valori di groupOrder duplicati all’interno dello stesso gruppo.');
+  }
+
+  // 8. ORDINE DEI MEMBRI: sequenza continua a partire da 1
+  let isSequenceValid = true;
+  const sortedOrders = Array.from(ordersSet).sort((a, b) => a - b);
+  if (sortedOrders.length !== count) {
+    isSequenceValid = false;
+  } else {
+    for (let i = 0; i < count; i++) {
+      if (sortedOrders[i] !== i + 1) {
+        isSequenceValid = false;
+        break;
+      }
+    }
+  }
+
+  if (!isSequenceValid) {
+    errors.push('I groupOrder devono formare una sequenza continua a partire da 1.');
+  }
+
+  // 7. COERENZA DELLE IMPOSTAZIONI
+  const normalizedMembers = members.map(normalizeExerciseGroupData);
+  let hasRestBetweenMismatch = false;
+  let hasRestAfterMismatch = false;
+  let hasRoundsMismatch = false;
+
+  if (normalizedMembers.length > 0) {
+    const firstBetween = normalizedMembers[0].groupRestBetweenExercisesSec;
+    const firstAfter = normalizedMembers[0].groupRestAfterRoundSec;
+    const firstRounds = normalizedMembers[0].groupRounds;
+
+    for (let i = 1; i < normalizedMembers.length; i++) {
+      if (normalizedMembers[i].groupRestBetweenExercisesSec !== firstBetween) {
+        hasRestBetweenMismatch = true;
+      }
+      if (normalizedMembers[i].groupRestAfterRoundSec !== firstAfter) {
+        hasRestAfterMismatch = true;
+      }
+      if (normalizedMembers[i].groupRounds !== firstRounds) {
+        hasRoundsMismatch = true;
+      }
+    }
+  }
+
+  if (hasRestBetweenMismatch) {
+    errors.push('Il recupero tra gli esercizi non è uniforme nel gruppo.');
+  }
+  if (hasRestAfterMismatch) {
+    errors.push('Il recupero dopo il giro non è uniforme nel gruppo.');
+  }
+  if (hasRoundsMismatch) {
+    errors.push('Il numero di giri non è uniforme nel gruppo.');
   }
 
   return {
@@ -277,18 +365,50 @@ export function getGroupMemberLabel(groupIndex: number, memberOrder: number): st
 }
 
 /**
- * 8. COPIA E DUPLICAZIONE
- * Genera un nuovo identificativo stabile, non vuoto e sufficientemente univoco.
+ * 8. COPIA E DUPLICAZIONE / IDENTIFICATIVO UNIVOCO
+ * Genera un nuovo identificativo stabile, non vuoto, senza spazi e sufficientemente univoco.
  */
 export function createExerciseGroupId(): string {
-  return 'g_' + Math.random().toString(36).substring(2, 9);
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `group_${crypto.randomUUID()}`;
+  }
+
+  // Fallback UUID v4 generator
+  let uuid = '';
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    // Set UUID v4 variant and version bits
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // Version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant 10xxxxxx
+    
+    const hex: string[] = [];
+    for (let i = 0; i < 16; i++) {
+      hex.push(bytes[i].toString(16).padStart(2, '0'));
+    }
+    uuid = [
+      hex.slice(0, 4).join(''),
+      hex.slice(4, 6).join(''),
+      hex.slice(6, 8).join(''),
+      hex.slice(8, 10).join(''),
+      hex.slice(10, 16).join('')
+    ].join('-');
+  } else {
+    // Math.random & Date.now fallback
+    const d = Date.now().toString(16);
+    const r1 = Math.random().toString(16).substring(2, 10);
+    const r2 = Math.random().toString(16).substring(2, 10);
+    const r3 = Math.random().toString(16).substring(2, 6);
+    uuid = `${d}-${r1}-${r2}-${r3}`;
+  }
+
+  return `group_${uuid}`;
 }
 
-// 10. TEST SUITE
+// 10. TEST SUITE (MANUALI)
 export function runExerciseGroupTests() {
   console.log('=== RUNNING EXERCISE GROUP UTILS SELF-TESTS ===');
   try {
-    // 1. esercizio singolo senza gruppo
     const exSingle: WorkoutExercise = {
       id: 'ex1',
       exerciseId: 'orig1',
@@ -301,6 +421,8 @@ export function runExerciseGroupTests() {
       recupero: 90,
       tut: '3-0-1-0'
     };
+
+    // 1. esercizio singolo senza gruppo
     const isGrpSingle = isGroupedExercise(exSingle);
     console.log('Test - Esercizio singolo senza gruppo isGroupedExercise:', isGrpSingle === false ? 'PASSED' : 'FAILED');
 
@@ -405,10 +527,59 @@ export function runExerciseGroupTests() {
       groupType: 'superset' as any,
       groupRest: 120
     };
-    const resNorm = normalizeExerciseGroupData(legacyEx);
-    // Verifichiamo che l'originale non sia stato modificato
+    normalizeExerciseGroupData(legacyEx);
     const originalUntouched = legacyEx.groupRest === 120 && legacyEx.groupRestAfterRoundSec === undefined;
     console.log('Test - Nessuna modifica ai dati legacy originali:', originalUntouched ? 'PASSED' : 'FAILED');
+
+    // 13. groupType sconosciuto
+    const invalidTypeRes = validateExerciseGroup('sconosciuto' as any, [exSuperset1, exSuperset2]);
+    const isTypeInvalid = invalidTypeRes.valid === false && invalidTypeRes.errors.includes('Tipologia del gruppo non valida.');
+    console.log('Test - groupType sconosciuto:', isTypeInvalid ? 'PASSED' : 'FAILED');
+
+    // 14. membro senza groupType
+    const memberNoType = { ...exSuperset1, groupType: undefined };
+    const noTypeRes = validateExerciseGroup('superset', [memberNoType, exSuperset2]);
+    const isNoTypeInvalid = noTypeRes.valid === false && noTypeRes.errors.some(e => e.includes('groupType assente.'));
+    console.log('Test - Membro senza groupType:', isNoTypeInvalid ? 'PASSED' : 'FAILED');
+
+    // 15. due membri con groupId differenti
+    const memberDiffGroup = { ...exSuperset2, groupId: 'diff_group_id' };
+    const diffGroupIdRes = validateExerciseGroup('superset', [exSuperset1, memberDiffGroup]);
+    const isDiffGroupInvalid = diffGroupIdRes.valid === false && diffGroupIdRes.errors.includes('Gli esercizi del gruppo devono condividere lo stesso groupId.');
+    console.log('Test - Due membri con groupId differenti:', isDiffGroupInvalid ? 'PASSED' : 'FAILED');
+
+    // 16. recuperi differenti nello stesso gruppo
+    const memberDiffRest = { ...exSuperset2, groupRestBetweenExercisesSec: 15 };
+    const diffRestRes = validateExerciseGroup('superset', [exSuperset1, memberDiffRest]);
+    const isDiffRestInvalid = diffRestRes.valid === false && diffRestRes.errors.includes('Il recupero tra gli esercizi non è uniforme nel gruppo.');
+    console.log('Test - Recuperi differenti nel gruppo:', isDiffRestInvalid ? 'PASSED' : 'FAILED');
+
+    // 17. numero di giri differente
+    const memberDiffRounds = { ...exSuperset2, groupRounds: 4 };
+    const diffRoundsRes = validateExerciseGroup('superset', [exSuperset1, memberDiffRounds]);
+    const isDiffRoundsInvalid = diffRoundsRes.valid === false && diffRoundsRes.errors.includes('Il numero di giri non è uniforme nel gruppo.');
+    console.log('Test - Numero di giri differente:', isDiffRoundsInvalid ? 'PASSED' : 'FAILED');
+
+    // 18. ordini 1 e 3 (sequenza non continua)
+    const memberOrder3 = { ...exSuperset2, groupOrder: 3 };
+    const orderSequenceGapRes = validateExerciseGroup('superset', [exSuperset1, memberOrder3]);
+    const isGapInvalid = orderSequenceGapRes.valid === false && orderSequenceGapRes.errors.includes('I groupOrder devono formare una sequenza continua a partire da 1.');
+    console.log('Test - Ordini 1 e 3 non contigui:', isGapInvalid ? 'PASSED' : 'FAILED');
+
+    // 19. ordini 1 e 2 validi
+    const orderSequenceValidRes = validateExerciseGroup('superset', [exSuperset1, exSuperset2]);
+    const isSequenceOk = orderSequenceValidRes.valid === true && !orderSequenceValidRes.errors.includes('I groupOrder devono formare una sequenza continua a partire da 1.');
+    console.log('Test - Ordini 1 e 2 validi:', isSequenceOk ? 'PASSED' : 'FAILED');
+
+    // 20. identificativo non vuoto
+    const newId = createExerciseGroupId();
+    const isIdValid = typeof newId === 'string' && newId.length > 0 && !newId.includes(' ');
+    console.log('Test - Identificativo non vuoto e valido:', isIdValid ? 'PASSED' : 'FAILED');
+
+    // 21. due chiamate consecutive producono identificativi differenti
+    const anotherId = createExerciseGroupId();
+    const isIdUnique = newId !== anotherId;
+    console.log('Test - Identificativi univoci e differenti:', isIdUnique ? 'PASSED' : 'FAILED');
 
   } catch (error) {
     console.error('Error in self-tests:', error);
