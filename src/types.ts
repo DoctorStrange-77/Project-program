@@ -38,6 +38,157 @@ export interface CoachConfig {
 export type Sesso = 'Uomo' | 'Donna' | 'Altro';
 export type LivelloEsperienza = 'Principiante' | 'Intermedio' | 'Avanzato';
 
+export type MeasurementContext =
+  | 'presenza'
+  | 'online'
+  | 'autonoma';
+
+export type BodyCompositionMethod =
+  | 'manuale'
+  | 'plicometria'
+  | 'bioimpedenza'
+  | 'dexa'
+  | 'altro';
+
+export interface CircumferenceMeasurements {
+  collo?: number;
+  spalle?: number;
+  torace?: number;
+  vita?: number;
+  addome?: number;
+  fianchi?: number;
+
+  braccioSinistroRilassato?: number;
+  braccioDestroRilassato?: number;
+  braccioSinistroFlesso?: number;
+  braccioDestroFlesso?: number;
+
+  avambraccioSinistro?: number;
+  avambraccioDestro?: number;
+
+  cosciaSinistraProssimale?: number;
+  cosciaDestraProssimale?: number;
+  cosciaSinistraMediale?: number;
+  cosciaDestraMediale?: number;
+
+  polpaccioSinistro?: number;
+  polpaccioDestro?: number;
+}
+
+export type SkinfoldSite =
+  | 'pettorale'
+  | 'addominale'
+  | 'coscia'
+  | 'tricipitale'
+  | 'bicipitale'
+  | 'sottoscapolare'
+  | 'sovrailiaca'
+  | 'ascellareMedia'
+  | 'polpaccio'
+  | 'lombare';
+
+export interface SkinfoldReading {
+  site: SkinfoldSite;
+  readings: number[];
+  selectedValue?: number;
+}
+
+export interface SkinfoldMeasurements {
+  protocolName?: string;
+  caliperName?: string;
+  readings?: SkinfoldReading[];
+  notes?: string;
+}
+
+export type SkinfoldFormulaId =
+  | 'jackson_pollock_3_male'
+  | 'jackson_pollock_3_female'
+  | 'jackson_pollock_7_male'
+  | 'jackson_pollock_7_female'
+  | 'durnin_womersley_4';
+
+export type BodyDensityConversionId =
+  | 'siri_1961'
+  | 'brozek_1963';
+
+export type BodyCompositionCalculationStatus =
+  | 'valid'
+  | 'warning'
+  | 'invalid';
+
+export interface BodyCompositionCalculationInput {
+  formulaId: SkinfoldFormulaId;
+  conversionId: BodyDensityConversionId;
+  sesso: Sesso;
+  eta: number;
+  pesoKg: number;
+  skinfoldValuesMm: Partial<Record<SkinfoldSite, number>>;
+}
+
+export interface BodyCompositionCalculationResult {
+  status: BodyCompositionCalculationStatus;
+
+  formulaId: SkinfoldFormulaId;
+  formulaLabel: string;
+  formulaVersion: string;
+
+  conversionId: BodyDensityConversionId;
+  conversionLabel: string;
+
+  sessoUtilizzato: Sesso;
+  etaUtilizzata: number;
+  pesoUtilizzatoKg: number;
+
+  sitesRequired: SkinfoldSite[];
+  siteValuesMm: Partial<Record<SkinfoldSite, number>>;
+  skinfoldSumMm: number;
+
+  bodyDensity?: number;
+  bodyFatPercent?: number;
+  fatMassKg?: number;
+  leanMassKg?: number;
+
+  errors: string[];
+  warnings: string[];
+
+  calculatedAt: string;
+}
+
+export interface SavedBodyCompositionCalculation
+  extends BodyCompositionCalculationResult {
+  id: string;
+  inputSignature: string;
+}
+
+export interface BodyCompositionData {
+  method?: BodyCompositionMethod;
+
+  bodyFatPercent?: number;
+  fatMassKg?: number;
+  leanMassKg?: number;
+
+  skeletalMuscleMassKg?: number;
+  totalBodyWaterPercent?: number;
+  visceralFatIndex?: number;
+
+  deviceName?: string;
+  manuallyEntered?: boolean;
+
+  calculationMode?: 'manuale' | 'formula';
+  savedCalculation?: SavedBodyCompositionCalculation;
+  calculationOutdated?: boolean;
+}
+
+export interface MeasurementConditions {
+  time?: string;
+  fastingHours?: number;
+  hydrationNotes?: string;
+  lastTrainingHours?: number;
+  operatorName?: string;
+  clothingNotes?: string;
+  measurementLocation?: string;
+}
+
 export interface ClientMeasurement {
   id: string;
   data: string; // YYYY-MM-DD
@@ -48,6 +199,15 @@ export interface ClientMeasurement {
   coscia: number; // cm
   massaGrassa?: number; // %
   noteControllo?: string;
+  
+  context?: MeasurementContext;
+  altezza?: number;
+  circonferenze?: CircumferenceMeasurements;
+  pliche?: SkinfoldMeasurements;
+  composizioneCorporea?: BodyCompositionData;
+  condizioni?: MeasurementConditions;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Client {
@@ -69,6 +229,59 @@ export interface Client {
   noteCoach?: string;
   prossimoControllo?: string; // YYYY-MM-DD (Date of next check-in)
   rilevazioni?: ClientMeasurement[];
+  checkIns?: ClientCheckIn[];
+}
+
+export type ClientCheckType =
+  | 'presenza'
+  | 'online';
+
+export type ClientCheckStatus =
+  | 'bozza'
+  | 'da_inviare'
+  | 'inviato'
+  | 'ricevuto'
+  | 'revisionato';
+
+export interface ClientCheckIn {
+  id: string;
+  data: string;
+  tipo: ClientCheckType;
+  stato: ClientCheckStatus;
+
+  measurementId?: string;
+
+  aderenzaAllenamento?: number;
+  aderenzaNutrizione?: number;
+
+  energia?: number;
+  sonnoQualita?: number;
+  sonnoOre?: number;
+  stress?: number;
+  fame?: number;
+  digestione?: number;
+  recupero?: number;
+
+  passiMedi?: number;
+  cardioSessioni?: number;
+  cardioMinuti?: number;
+
+  allenamentiPrevisti?: number;
+  allenamentiCompletati?: number;
+
+  feedbackCliente?: string;
+  difficoltaRiscontrate?: string;
+  eventiRilevanti?: string;
+
+  valutazioneCoach?: string;
+  modificheAllenamento?: string;
+  modificheNutrizione?: string;
+  azioniConcordate?: string;
+
+  prossimoControllo?: string;
+
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type DistrettoMuscolare = 

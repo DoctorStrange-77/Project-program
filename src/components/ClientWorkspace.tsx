@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
-import { Client, CoachConfig, WorkoutPlan, ClientMeasurement } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Client, CoachConfig, WorkoutPlan, ClientMeasurement, ClientCheckIn, ClientCheckType, ClientCheckStatus } from '../types';
 import { 
   User, Award, Scale, Ruler, Calendar, BookOpen, Clock, ChevronLeft,
   Edit2, Trash2, Plus, Download, TrendingUp, Info, Activity, MessageSquare, ListTodo,
-  FileText, Dumbbell, Settings, ClipboardList, CheckCircle, Flame, PieChart, Apple, ShieldAlert
+  FileText, Dumbbell, Settings, ClipboardList, CheckCircle, Flame, PieChart, Apple, ShieldAlert,
+  Copy, Eye, X, AlertTriangle
 } from 'lucide-react';
 import LogbookTracker from './LogbookTracker';
+import ClientAnthropometry from './ClientAnthropometry';
 
 interface ClientWorkspaceProps {
   client: Client;
@@ -18,6 +20,15 @@ interface ClientWorkspaceProps {
   onDeleteMeasurement: (measureId: string) => void;
   onClose: () => void;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info' | 'warning') => void;
+  onUpdateClient: (client: Client) => void;
+  onShowConfirm?: (config: {
+    title: string;
+    message: string;
+    confirmText: string;
+    cancelText?: string;
+    isDestructive?: boolean;
+    onConfirm: () => void;
+  }) => void;
 }
 
 export default function ClientWorkspace({
@@ -30,11 +41,602 @@ export default function ClientWorkspace({
   onAddMeasurement,
   onDeleteMeasurement,
   onClose,
-  onShowToast
+  onShowToast,
+  onUpdateClient,
+  onShowConfirm
 }: ClientWorkspaceProps) {
   // Tabs: 'panoramica' | 'check' | 'antropometria' | 'allenamento' | 'attrezzatura' | 'nutrizione' | 'insight' | 'logbook'
   const [clientWorkspaceTab, setClientWorkspaceTab] = useState<string>('panoramica');
   const [chartMetric, setChartMetric] = useState<'peso' | 'vita'>('peso');
+  const [selectedMeasurementId, setSelectedMeasurementId] = useState<string | null>(null);
+
+  // Check-ins active state
+  const [isCheckModalOpen, setIsCheckModalOpen] = useState(false);
+  const [selectedCheckIn, setSelectedCheckIn] = useState<ClientCheckIn | null>(null);
+  const [isViewingCheckIn, setIsViewingCheckIn] = useState<ClientCheckIn | null>(null);
+
+  // Form states for CheckIn
+  const [checkId, setCheckId] = useState('');
+  const [checkData, setCheckData] = useState('');
+  const [checkTipo, setCheckTipo] = useState<ClientCheckType>('presenza');
+  const [checkStato, setCheckStato] = useState<ClientCheckStatus>('bozza');
+  const [checkMeasurementId, setCheckMeasurementId] = useState('');
+  
+  const [checkAderenzaAllenamento, setCheckAderenzaAllenamento] = useState<number | ''>('');
+  const [checkAderenzaNutrizione, setCheckAderenzaNutrizione] = useState<number | ''>('');
+  const [checkAllenamentiPrevisti, setCheckAllenamentiPrevisti] = useState<number | ''>('');
+  const [checkAllenamentiCompletati, setCheckAllenamentiCompletati] = useState<number | ''>('');
+  const [checkCardioSessioni, setCheckCardioSessioni] = useState<number | ''>('');
+  const [checkCardioMinuti, setCheckCardioMinuti] = useState<number | ''>('');
+  const [checkPassiMedi, setCheckPassiMedi] = useState<number | ''>('');
+
+  const [checkEnergia, setCheckEnergia] = useState<number | ''>('');
+  const [checkSonnoQualita, setCheckSonnoQualita] = useState<number | ''>('');
+  const [checkSonnoOre, setCheckSonnoOre] = useState<number | ''>('');
+  const [checkStress, setCheckStress] = useState<number | ''>('');
+  const [checkFame, setCheckFame] = useState<number | ''>('');
+  const [checkDigestione, setCheckDigestione] = useState<number | ''>('');
+  const [checkRecupero, setCheckRecupero] = useState<number | ''>('');
+
+  const [checkFeedbackCliente, setCheckFeedbackCliente] = useState('');
+  const [checkDifficoltaRiscontrate, setCheckDifficoltaRiscontrate] = useState('');
+  const [checkEventiRilevanti, setCheckEventiRilevanti] = useState('');
+
+  const [checkValutazioneCoach, setCheckValutazioneCoach] = useState('');
+  const [checkModificheAllenamento, setCheckModificheAllenamento] = useState('');
+  const [checkModificheNutrizione, setCheckModificheNutrizione] = useState('');
+  const [checkAzioniConcordate, setCheckAzioniConcordate] = useState('');
+  const [checkProssimoControllo, setCheckProssimoControllo] = useState('');
+  
+  const [confirmSpecialAllenamento, setConfirmSpecialAllenamento] = useState(false);
+
+  // Keyboard close for Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsCheckModalOpen(false);
+        setIsViewingCheckIn(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Return focus on unmount helper
+  useEffect(() => {
+    if (isCheckModalOpen || isViewingCheckIn) {
+      const activeEl = document.activeElement as HTMLElement | null;
+      return () => {
+        if (activeEl && typeof activeEl.focus === 'function') {
+          activeEl.focus();
+        }
+      };
+    }
+  }, [isCheckModalOpen, isViewingCheckIn]);
+
+  const openNewCheckModal = (type: ClientCheckType = 'presenza') => {
+    setCheckId('');
+    setCheckData(new Date().toISOString().substring(0, 10));
+    setCheckTipo(type);
+    setCheckStato('bozza');
+    setCheckMeasurementId('');
+    
+    setCheckAderenzaAllenamento('');
+    setCheckAderenzaNutrizione('');
+    setCheckAllenamentiPrevisti('');
+    setCheckAllenamentiCompletati('');
+    setCheckCardioSessioni('');
+    setCheckCardioMinuti('');
+    setCheckPassiMedi('');
+    
+    setCheckEnergia('');
+    setCheckSonnoQualita('');
+    setCheckSonnoOre('');
+    setCheckStress('');
+    setCheckFame('');
+    setCheckDigestione('');
+    setCheckRecupero('');
+    
+    setCheckFeedbackCliente('');
+    setCheckDifficoltaRiscontrate('');
+    setCheckEventiRilevanti('');
+    
+    setCheckValutazioneCoach('');
+    setCheckModificheAllenamento('');
+    setCheckModificheNutrizione('');
+    setCheckAzioniConcordate('');
+    setCheckProssimoControllo('');
+    
+    setConfirmSpecialAllenamento(false);
+    setSelectedCheckIn(null);
+    setIsCheckModalOpen(true);
+  };
+
+  const openEditCheckModal = (checkIn: ClientCheckIn) => {
+    setCheckId(checkIn.id);
+    setCheckData(checkIn.data);
+    setCheckTipo(checkIn.tipo);
+    setCheckStato(checkIn.stato);
+    setCheckMeasurementId(checkIn.measurementId || '');
+    
+    setCheckAderenzaAllenamento(checkIn.aderenzaAllenamento !== undefined ? checkIn.aderenzaAllenamento : '');
+    setCheckAderenzaNutrizione(checkIn.aderenzaNutrizione !== undefined ? checkIn.aderenzaNutrizione : '');
+    setCheckAllenamentiPrevisti(checkIn.allenamentiPrevisti !== undefined ? checkIn.allenamentiPrevisti : '');
+    setCheckAllenamentiCompletati(checkIn.allenamentiCompletati !== undefined ? checkIn.allenamentiCompletati : '');
+    setCheckCardioSessioni(checkIn.cardioSessioni !== undefined ? checkIn.cardioSessioni : '');
+    setCheckCardioMinuti(checkIn.cardioMinuti !== undefined ? checkIn.cardioMinuti : '');
+    setCheckPassiMedi(checkIn.passiMedi !== undefined ? checkIn.passiMedi : '');
+    
+    setCheckEnergia(checkIn.energia !== undefined ? checkIn.energia : '');
+    setCheckSonnoQualita(checkIn.sonnoQualita !== undefined ? checkIn.sonnoQualita : '');
+    setCheckSonnoOre(checkIn.sonnoOre !== undefined ? checkIn.sonnoOre : '');
+    setCheckStress(checkIn.stress !== undefined ? checkIn.stress : '');
+    setCheckFame(checkIn.fame !== undefined ? checkIn.fame : '');
+    setCheckDigestione(checkIn.digestione !== undefined ? checkIn.digestione : '');
+    setCheckRecupero(checkIn.recupero !== undefined ? checkIn.recupero : '');
+    
+    setCheckFeedbackCliente(checkIn.feedbackCliente || '');
+    setCheckDifficoltaRiscontrate(checkIn.difficoltaRiscontrate || '');
+    setCheckEventiRilevanti(checkIn.eventiRilevanti || '');
+    
+    setCheckValutazioneCoach(checkIn.valutazioneCoach || '');
+    setCheckModificheAllenamento(checkIn.modificheAllenamento || '');
+    setCheckModificheNutrizione(checkIn.modificheNutrizione || '');
+    setCheckAzioniConcordate(checkIn.azioniConcordate || '');
+    setCheckProssimoControllo(checkIn.prossimoControllo || '');
+    
+    setConfirmSpecialAllenamento(false);
+    setSelectedCheckIn(checkIn);
+    setIsCheckModalOpen(true);
+  };
+
+  const handleCheckTipoChange = (type: ClientCheckType) => {
+    setCheckTipo(type);
+    if (type === 'presenza') {
+      if (checkStato === 'da_inviare' || checkStato === 'inviato' || checkStato === 'ricevuto') {
+        setCheckStato('bozza');
+      }
+    }
+  };
+
+  const handleCheckSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (checkAderenzaAllenamento !== '' && (checkAderenzaAllenamento < 0 || checkAderenzaAllenamento > 100)) {
+      alert("Aderenza Allenamento deve essere compresa tra 0 e 100.");
+      return;
+    }
+    if (checkAderenzaNutrizione !== '' && (checkAderenzaNutrizione < 0 || checkAderenzaNutrizione > 100)) {
+      alert("Aderenza Nutrizione deve essere compresa tra 0 e 100.");
+      return;
+    }
+    if (checkAllenamentiPrevisti !== '' && checkAllenamentiPrevisti < 0) {
+      alert("Gli allenamenti previsti non possono essere negativi.");
+      return;
+    }
+    if (checkAllenamentiCompletati !== '' && checkAllenamentiCompletati < 0) {
+      alert("Gli allenamenti completati non possono essere negativi.");
+      return;
+    }
+    if (checkCardioSessioni !== '' && checkCardioSessioni < 0) {
+      alert("Le sessioni cardio non possono essere negative.");
+      return;
+    }
+    if (checkCardioMinuti !== '' && checkCardioMinuti < 0) {
+      alert("I minuti cardio non possono essere negativi.");
+      return;
+    }
+    if (checkPassiMedi !== '' && checkPassiMedi < 0) {
+      alert("I passi medi giornalieri non possono essere negativi.");
+      return;
+    }
+    if (checkSonnoOre !== '' && (checkSonnoOre < 0 || checkSonnoOre > 24)) {
+      alert("Le ore medie di sonno devono essere comprese tra 0 e 24.");
+      return;
+    }
+
+    if (
+      checkAllenamentiCompletati !== '' && 
+      checkAllenamentiPrevisti !== '' && 
+      checkAllenamentiCompletati > checkAllenamentiPrevisti && 
+      !confirmSpecialAllenamento
+    ) {
+      alert("Attenzione: Gli allenamenti completati superano quelli previsti. Seleziona la casella di conferma per procedere.");
+      return;
+    }
+
+    const nowStr = new Date().toISOString();
+    const finalId = checkId || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'chk_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9));
+    
+    const newCheckIn: ClientCheckIn = {
+      id: finalId,
+      data: checkData,
+      tipo: checkTipo,
+      stato: checkStato,
+      measurementId: checkMeasurementId || undefined,
+      
+      aderenzaAllenamento: checkAderenzaAllenamento !== '' ? Number(checkAderenzaAllenamento) : undefined,
+      aderenzaNutrizione: checkAderenzaNutrizione !== '' ? Number(checkAderenzaNutrizione) : undefined,
+      allenamentiPrevisti: checkAllenamentiPrevisti !== '' ? Number(checkAllenamentiPrevisti) : undefined,
+      allenamentiCompletati: checkAllenamentiCompletati !== '' ? Number(checkAllenamentiCompletati) : undefined,
+      cardioSessioni: checkCardioSessioni !== '' ? Number(checkCardioSessioni) : undefined,
+      cardioMinuti: checkCardioMinuti !== '' ? Number(checkCardioMinuti) : undefined,
+      passiMedi: checkPassiMedi !== '' ? Number(checkPassiMedi) : undefined,
+      
+      energia: checkEnergia !== '' ? Number(checkEnergia) : undefined,
+      sonnoQualita: checkSonnoQualita !== '' ? Number(checkSonnoQualita) : undefined,
+      sonnoOre: checkSonnoOre !== '' ? Number(checkSonnoOre) : undefined,
+      stress: checkStress !== '' ? Number(checkStress) : undefined,
+      fame: checkFame !== '' ? Number(checkFame) : undefined,
+      digestione: checkDigestione !== '' ? Number(checkDigestione) : undefined,
+      recupero: checkRecupero !== '' ? Number(checkRecupero) : undefined,
+      
+      feedbackCliente: checkFeedbackCliente.trim() || undefined,
+      difficoltaRiscontrate: checkDifficoltaRiscontrate.trim() || undefined,
+      eventiRilevanti: checkEventiRilevanti.trim() || undefined,
+      
+      valutazioneCoach: checkValutazioneCoach.trim() || undefined,
+      modificheAllenamento: checkModificheAllenamento.trim() || undefined,
+      modificheNutrizione: checkModificheNutrizione.trim() || undefined,
+      azioniConcordate: checkAzioniConcordate.trim() || undefined,
+      prossimoControllo: checkProssimoControllo || undefined,
+      
+      createdAt: selectedCheckIn ? selectedCheckIn.createdAt : nowStr,
+      updatedAt: nowStr
+    };
+
+    const currentCheckIns = client.checkIns ?? [];
+    let updatedCheckIns: ClientCheckIn[] = [];
+    if (selectedCheckIn) {
+      updatedCheckIns = currentCheckIns.map(c => c.id === checkId ? newCheckIn : c);
+    } else {
+      updatedCheckIns = [newCheckIn, ...currentCheckIns];
+    }
+
+    const updatedClient: Client = {
+      ...client,
+      checkIns: updatedCheckIns
+    };
+
+    if (checkProssimoControllo) {
+      updatedClient.prossimoControllo = checkProssimoControllo;
+    }
+
+    onUpdateClient(updatedClient);
+    setIsCheckModalOpen(false);
+    
+    if (isViewingCheckIn && isViewingCheckIn.id === checkId) {
+      setIsViewingCheckIn(newCheckIn);
+    }
+
+    if (onShowToast) {
+      onShowToast(selectedCheckIn ? 'Check aggiornato con successo!' : 'Nuovo check creato con successo!', 'success');
+    }
+  };
+
+  const handleDuplicateCheckIn = (checkIn: ClientCheckIn) => {
+    const newId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'chk_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+    const nowStr = new Date().toISOString();
+    const todayStr = nowStr.substring(0, 10);
+    
+    const duplicated: ClientCheckIn = {
+      ...checkIn,
+      id: newId,
+      data: todayStr,
+      stato: 'bozza',
+      createdAt: nowStr,
+      updatedAt: nowStr
+    };
+    
+    const currentCheckIns = client.checkIns ?? [];
+    const updatedCheckIns = [duplicated, ...currentCheckIns];
+    
+    const updatedClient: Client = {
+      ...client,
+      checkIns: updatedCheckIns
+    };
+    
+    onUpdateClient(updatedClient);
+    if (onShowToast) {
+      onShowToast('Check duplicato come bozza con successo!', 'success');
+    }
+  };
+
+  const handleDeleteCheckIn = (checkIn: ClientCheckIn) => {
+    const performDelete = () => {
+      const currentCheckIns = client.checkIns ?? [];
+      const updatedCheckIns = currentCheckIns.filter(c => c.id !== checkIn.id);
+      const updatedClient: Client = {
+        ...client,
+        checkIns: updatedCheckIns
+      };
+      onUpdateClient(updatedClient);
+      if (onShowToast) {
+        onShowToast('Check eliminato con successo.', 'success');
+      }
+    };
+
+    const formattedType = checkIn.tipo === 'presenza' ? 'In presenza' : 'Online';
+    const formattedDate = checkIn.data.replace(/(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1');
+
+    if (onShowConfirm) {
+      onShowConfirm({
+        title: 'Eliminare check-in?',
+        message: `Sei sicuro di voler eliminare il check del ${formattedDate} (${formattedType})? Questa operazione è irreversibile.`,
+        confirmText: 'Sì, elimina',
+        isDestructive: true,
+        onConfirm: performDelete
+      });
+    } else {
+      const confirmed = window.confirm(`Sei sicuro di voler eliminare il check del ${formattedDate} (${formattedType})? Questa operazione è irreversibile.`);
+      if (confirmed) {
+        performDelete();
+      }
+    }
+  };
+
+  const getDeterministicAlerts = (check: ClientCheckIn) => {
+    const alerts: { type: 'warning' | 'info'; text: string; details: string }[] = [];
+    
+    if (check.aderenzaAllenamento !== undefined && check.aderenzaAllenamento < 70) {
+      alerts.push({
+        type: 'warning',
+        text: 'Aderenza allenamento bassa',
+        details: `Il valore registrato (${check.aderenzaAllenamento}%) è inferiore alla soglia consigliata del 70%.`
+      });
+    }
+    
+    if (check.aderenzaNutrizione !== undefined && check.aderenzaNutrizione < 70) {
+      alerts.push({
+        type: 'warning',
+        text: 'Aderenza nutrizione bassa',
+        details: `Il valore registrato (${check.aderenzaNutrizione}%) è inferiore alla soglia consigliata del 70%.`
+      });
+    }
+    
+    if (check.stress !== undefined && check.stress >= 8) {
+      alerts.push({
+        type: 'warning',
+        text: 'Livello di stress elevato',
+        details: `Il valore registrato (${check.stress}/10) indica uno stress percepito molto alto.`
+      });
+    }
+    
+    if (check.sonnoOre !== undefined && check.sonnoOre < 6) {
+      alerts.push({
+        type: 'warning',
+        text: 'Sonno insufficiente',
+        details: `La media delle ore di sonno registrata (${check.sonnoOre} ore) è inferiore al minimo consigliato di 6 ore.`
+      });
+    }
+    
+    if (check.energia !== undefined && check.energia <= 3) {
+      alerts.push({
+        type: 'warning',
+        text: 'Livello energetico basso',
+        details: `L'energia percepita registrata (${check.energia}/10) è molto bassa.`
+      });
+    }
+    
+    if (check.recupero !== undefined && check.recupero <= 3) {
+      alerts.push({
+        type: 'warning',
+        text: 'Recupero inadeguato',
+        details: `Il recupero percepito registrata (${check.recupero}/10) è inferiore alla soglia ideale.`
+      });
+    }
+    
+    return alerts;
+  };
+
+  const STATUS_LABELS: Record<ClientCheckStatus, string> = {
+    bozza: 'Bozza',
+    da_inviare: 'Da inviare',
+    inviato: 'Inviato',
+    ricevuto: 'Ricevuto',
+    revisionato: 'Revisionato'
+  };
+
+  const STATUS_BADGES: Record<ClientCheckStatus, string> = {
+    bozza: 'bg-neutral-800 text-white/50 border border-white/5',
+    da_inviare: 'bg-amber-500/10 text-amber-400 border border-amber-500/20',
+    inviato: 'bg-blue-500/10 text-blue-400 border border-blue-500/20',
+    ricevuto: 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20',
+    revisionato: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+  };
+
+  const checkInsList = client.checkIns ?? [];
+  const totalChecks = checkInsList.length;
+  const sortedCheckIns = [...checkInsList].sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime());
+  const lastCheck = sortedCheckIns[0];
+  const lastCheckDateStr = lastCheck ? lastCheck.data.replace(/(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1') : '—';
+  const prossimoControlloStr = client.prossimoControllo ? client.prossimoControllo.replace(/(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1') : '—';
+  const checksToReview = checkInsList.filter(c => c.stato === 'ricevuto' || c.stato === 'inviato').length;
+
+  const renderPillRating = (
+    label: string,
+    value: number | '',
+    onChange: (val: number) => void,
+    directionMin: string,
+    directionMax: string,
+    id: string
+  ) => {
+    return (
+      <div className="space-y-2">
+        <label htmlFor={id} className="block text-xs font-bold text-white/70">
+          {label}
+        </label>
+        <div className="flex flex-wrap gap-1.5" id={id}>
+          {Array.from({ length: 10 }, (_, i) => i + 1).map((num) => {
+            const isSelected = value === num;
+            return (
+              <button
+                key={num}
+                type="button"
+                onClick={() => onChange(num)}
+                className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center text-xs font-black transition-all cursor-pointer border ${
+                  isSelected
+                    ? 'text-neutral-950 border-transparent'
+                    : 'bg-black/30 text-white/50 border-white/5 hover:border-white/20'
+                }`}
+                style={{
+                  backgroundColor: isSelected ? config.primaryColor : undefined,
+                }}
+                aria-label={`${label}: ${num}`}
+              >
+                {num}
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex justify-between text-[10px] text-white/40 font-medium px-1">
+          <span>{directionMin}</span>
+          <span>{directionMax}</span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderCheckInCard = (check: ClientCheckIn) => {
+    const alerts = getDeterministicAlerts(check);
+    const linkedMeasurement = client.rilevazioni?.find(r => r.id === check.measurementId);
+    
+    return (
+      <div 
+        key={check.id} 
+        className="bg-[#181818] border border-white/5 rounded-2xl p-5 space-y-4 hover:border-white/10 transition-all text-left"
+      >
+        <div className="flex flex-wrap justify-between items-start gap-2">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Flame className="w-4 h-4" style={{ color: config.primaryColor }} />
+              <h4 className="font-extrabold text-sm text-white">
+                Check del {check.data.replace(/(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1')}
+              </h4>
+              <span className={`text-[9px] px-2 py-0.5 rounded font-black uppercase tracking-wider ${STATUS_BADGES[check.stato]}`}>
+                {STATUS_LABELS[check.stato]}
+              </span>
+            </div>
+            <p className="text-[10px] text-white/40 uppercase tracking-wider">
+              Origine: {check.tipo === 'presenza' ? 'In presenza' : 'Online'}
+            </p>
+          </div>
+          
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setIsViewingCheckIn(check)}
+              className="p-1.5 rounded bg-black/40 border border-white/5 text-white/50 hover:text-white transition-all cursor-pointer"
+              title="Apri Dettaglio"
+              aria-label="Apri Dettaglio"
+            >
+              <Eye className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => openEditCheckModal(check)}
+              className="p-1.5 rounded bg-black/40 border border-white/5 text-white/50 hover:text-white transition-all cursor-pointer"
+              title="Modifica"
+              aria-label="Modifica"
+            >
+              <Edit2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => handleDuplicateCheckIn(check)}
+              className="p-1.5 rounded bg-black/40 border border-white/5 text-white/50 hover:text-white transition-all cursor-pointer"
+              title="Duplica"
+              aria-label="Duplica"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => handleDeleteCheckIn(check)}
+              className="p-1.5 rounded bg-black/40 border border-white/5 text-white/20 hover:text-red-400 transition-all cursor-pointer"
+              title="Elimina"
+              aria-label="Elimina"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs bg-black/20 p-3 rounded-xl border border-white/5">
+          <div>
+            <span className="text-[9px] text-white/35 uppercase tracking-wider block">Aderenza Allenamento</span>
+            <span className="text-white font-extrabold block mt-0.5">
+              {check.aderenzaAllenamento !== undefined ? `${check.aderenzaAllenamento}%` : '—'}
+            </span>
+          </div>
+          <div>
+            <span className="text-[9px] text-white/35 uppercase tracking-wider block">Aderenza Nutrizione</span>
+            <span className="text-white font-extrabold block mt-0.5">
+              {check.aderenzaNutrizione !== undefined ? `${check.aderenzaNutrizione}%` : '—'}
+            </span>
+          </div>
+          <div>
+            <span className="text-[9px] text-white/35 uppercase tracking-wider block">Energia</span>
+            <span className="text-white font-extrabold block mt-0.5">
+              {check.energia !== undefined ? `${check.energia}/10` : '—'}
+            </span>
+          </div>
+          <div>
+            <span className="text-[9px] text-white/35 uppercase tracking-wider block">Sonno</span>
+            <span className="text-white font-extrabold block mt-0.5 truncate">
+              {check.sonnoOre !== undefined ? `${check.sonnoOre} ore (${check.sonnoQualita !== undefined ? `${check.sonnoQualita}/10` : '—'})` : '—'}
+            </span>
+          </div>
+          <div>
+            <span className="text-[9px] text-white/35 uppercase tracking-wider block">Stress</span>
+            <span className="text-white font-extrabold block mt-0.5">
+              {check.stress !== undefined ? `${check.stress}/10` : '—'}
+            </span>
+          </div>
+          <div className="col-span-2 sm:col-span-1">
+            <button
+              onClick={() => {
+                if (linkedMeasurement) {
+                  setSelectedMeasurementId(linkedMeasurement.id);
+                  setClientWorkspaceTab('antropometria');
+                }
+              }}
+              className="text-left group cursor-pointer"
+              type="button"
+            >
+              <span className="text-[9px] text-white/35 uppercase tracking-wider block group-hover:text-white/60 transition-colors">Rilevazione Corporea</span>
+              <span className="text-white font-bold block mt-0.5 truncate group-hover:underline">
+                {linkedMeasurement 
+                  ? `${linkedMeasurement.peso} kg • ${linkedMeasurement.vita} cm` 
+                  : '—'}
+              </span>
+            </button>
+          </div>
+          <div>
+            <span className="text-[9px] uppercase tracking-wider font-black block" style={{ color: config.primaryColor }}>Prossimo Controllo</span>
+            <span className="text-white font-extrabold block mt-0.5">
+              {check.prossimoControllo 
+                ? check.prossimoControllo.replace(/(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1') 
+                : '—'}
+            </span>
+          </div>
+        </div>
+
+        {alerts.length > 0 && (
+          <div className="space-y-1.5 pt-1">
+            <span className="text-[9px] font-black uppercase text-amber-400 tracking-wider block">Indicatori di Attenzione</span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {alerts.map((alert, idx) => (
+                <div key={idx} className="bg-amber-500/5 border border-amber-500/10 rounded-lg p-2 flex gap-2 items-start text-[10px]">
+                  <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="text-left">
+                    <p className="font-extrabold text-amber-300">{alert.text}</p>
+                    <p className="text-white/60 leading-normal mt-0.5">{alert.details}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const clientPlans = plans.filter(p => p.clienteId === client.id);
   const activePlan = clientPlans.find(p => p.status === 'Attiva');
@@ -237,7 +839,7 @@ export default function ClientWorkspace({
 
   const tabs = [
     { id: 'panoramica', label: 'Panoramica', icon: ClipboardList },
-    { id: 'check', label: 'Check', icon: Flame, badge: 'Prossimamente' },
+    { id: 'check', label: 'Check', icon: Flame },
     { id: 'antropometria', label: 'Antropometria', icon: Ruler },
     { id: 'allenamento', label: 'Allenamento', icon: Dumbbell },
     { id: 'attrezzatura', label: 'Attrezzatura', icon: Settings, badge: 'Prossimamente' },
@@ -336,11 +938,14 @@ export default function ClientWorkspace({
           </button>
           
           <button
-            disabled
-            className="flex items-center gap-1.5 px-3 py-2 bg-neutral-900 text-white/40 border border-white/5 rounded-lg text-xs font-bold transition-all cursor-not-allowed"
+            onClick={() => {
+              setClientWorkspaceTab('check');
+              openNewCheckModal('presenza');
+            }}
+            className="flex items-center gap-1.5 px-3 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-xs font-bold transition-all cursor-pointer"
           >
-            <Flame className="w-3.5 h-3.5" />
-            Nuovo Check <span className="text-[8px] px-1 bg-white/5 rounded ml-1 text-white/30 font-bold uppercase tracking-wider">Prossimamente</span>
+            <Flame className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+            Nuovo Check
           </button>
 
           <button
@@ -576,147 +1181,147 @@ export default function ClientWorkspace({
                 )}
               </div>
             </div>
+
+            {/* Card F: Ultimo Check */}
+            <div className="bg-[#181818] border border-white/5 rounded-2xl p-5 space-y-4 text-left">
+              <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                <Flame className="w-4 h-4 text-white/40" />
+                <h3 className="text-xs font-black uppercase tracking-wider text-white">Ultimo Check Atleta</h3>
+              </div>
+              {lastCheck ? (
+                <div className="space-y-3.5 text-xs">
+                  <div className="flex justify-between items-center">
+                    <span className="font-extrabold text-white">Check del {lastCheck.data.replace(/(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1')}</span>
+                    <span className={`text-[8px] px-2 py-0.5 rounded font-black uppercase tracking-wider ${STATUS_BADGES[lastCheck.stato]}`}>
+                      {STATUS_LABELS[lastCheck.stato]}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 font-medium text-white/70">
+                    <div className="bg-black/10 p-2 rounded">
+                      <span className="text-[8px] text-white/30 uppercase tracking-wider block">Allenamento</span>
+                      <span className="text-white font-bold mt-0.5 block">{lastCheck.aderenzaAllenamento !== undefined ? `${lastCheck.aderenzaAllenamento}%` : '—'}</span>
+                    </div>
+                    <div className="bg-black/10 p-2 rounded">
+                      <span className="text-[8px] text-white/30 uppercase tracking-wider block">Nutrizione</span>
+                      <span className="text-white font-bold mt-0.5 block">{lastCheck.aderenzaNutrizione !== undefined ? `${lastCheck.aderenzaNutrizione}%` : '—'}</span>
+                    </div>
+                    <div className="bg-black/10 p-2 rounded">
+                      <span className="text-[8px] text-white/30 uppercase tracking-wider block">Energia</span>
+                      <span className="text-white font-bold mt-0.5 block">{lastCheck.energia !== undefined ? `${lastCheck.energia}/10` : '—'}</span>
+                    </div>
+                    <div className="bg-black/10 p-2 rounded">
+                      <span className="text-[8px] text-white/30 uppercase tracking-wider block">Stress</span>
+                      <span className="text-white font-bold mt-0.5 block">{lastCheck.stress !== undefined ? `${lastCheck.stress}/10` : '—'}</span>
+                    </div>
+                  </div>
+                  <div className="flex justify-between items-center pt-2 border-t border-white/5 text-[10px]">
+                    <span className="text-white/40">Prossimo Controllo:</span>
+                    <span className="text-[#CCFF00] font-black" style={{ color: config.primaryColor }}>
+                      {lastCheck.prossimoControllo ? lastCheck.prossimoControllo.replace(/(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1') : '—'}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center p-4 text-center bg-black/10 border border-dashed border-white/5 rounded-xl h-44">
+                  <p className="text-xs font-bold text-white/50 uppercase tracking-wider">Nessun check registrato</p>
+                  <p className="text-[10px] text-white/30 max-w-xs mt-1 mb-3">Non ci sono valutazioni periodiche salvate per questo atleta.</p>
+                  <button
+                    onClick={() => {
+                      setClientWorkspaceTab('check');
+                      setTimeout(() => {
+                        openNewCheckModal('presenza');
+                      }, 50);
+                    }}
+                    className="px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider text-neutral-950 transition-all cursor-pointer shadow-md"
+                    style={{ backgroundColor: config.primaryColor }}
+                  >
+                    Crea il primo check
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
-        {/* TAB: CHECK (PROSSIMAMENTE) */}
+        {/* TAB: CHECK */}
         {clientWorkspaceTab === 'check' && (
-          <div className="flex flex-col items-center justify-center p-12 text-center bg-[#181818] border border-white/5 rounded-2xl">
-            <Flame className="w-12 h-12 text-white/10 mb-3" />
-            <h3 className="text-sm font-black uppercase tracking-wider text-white">Gestione Check Atleta</h3>
-            <p className="text-xs text-white/30 max-w-sm mt-1 mb-4">
-              La sezione check ti consentirà di pianificare appuntamenti periodici, monitorare feedback energetici, livelli di stress e ore di sonno dell'atleta.
-            </p>
-            <span className="text-[10px] font-black uppercase text-[#CCFF00] tracking-wider px-3 py-1 bg-white/5 rounded-full" style={{ color: config.primaryColor }}>
-              Prossimamente
-            </span>
+          <div className="space-y-6">
+            {/* Header / Stats row */}
+            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+              <div className="text-left">
+                <h3 className="text-xs font-black uppercase tracking-wider text-white">Rapporti e Check-In Periodici</h3>
+                <p className="text-[10px] text-white/40 mt-1">Monitora l'aderenza, il recupero e le valutazioni professionali dell'atleta</p>
+              </div>
+              <button
+                onClick={() => openNewCheckModal('presenza')}
+                className="flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-black uppercase tracking-wider text-neutral-950 transition-all cursor-pointer shadow-md self-start sm:self-auto"
+                style={{ backgroundColor: config.primaryColor }}
+              >
+                <Plus className="w-4 h-4" />
+                Nuovo Check
+              </button>
+            </div>
+
+            {/* Indicator Cards Grid */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 text-left">
+              <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
+                <span className="text-[8px] font-black text-white/30 uppercase tracking-wider block">Total Check-In</span>
+                <span className="text-white font-black text-xl block mt-1">{totalChecks}</span>
+              </div>
+              <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
+                <span className="text-[8px] font-black text-white/30 uppercase tracking-wider block">Ultimo Check</span>
+                <span className="text-white font-black text-sm block mt-1.5 truncate">{lastCheckDateStr}</span>
+              </div>
+              <div className="bg-black/30 p-3.5 rounded-xl border border-white/5">
+                <span className="text-[8px] font-black text-white/30 uppercase tracking-wider block">Prossimo Controllo</span>
+                <span className="text-[#CCFF00] font-black text-sm block mt-1.5 truncate" style={{ color: config.primaryColor }}>{prossimoControlloStr}</span>
+              </div>
+              <div className="bg-black/30 p-3.5 rounded-xl border border-white/5 relative">
+                <span className="text-[8px] font-black text-white/30 uppercase tracking-wider block">Da Revisionare</span>
+                <div className="flex items-center gap-1.5 mt-1">
+                  <span className="text-white font-black text-xl">{checksToReview}</span>
+                  {checksToReview > 0 && (
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Check-ins list / empty state */}
+            {sortedCheckIns.length === 0 ? (
+              <div className="flex flex-col items-center justify-center p-12 text-center bg-[#181818] border border-dashed border-white/5 rounded-2xl">
+                <Flame className="w-12 h-12 text-white/10 mb-3" />
+                <h3 className="text-sm font-black uppercase tracking-wider text-white font-extrabold">Nessun check registrato</h3>
+                <p className="text-xs text-white/30 max-w-sm mt-1 mb-4 leading-relaxed">
+                  Registra le valutazioni fisiche e i resoconti periodici per monitorare i progressi, l'aderenza a dieta e allenamento, e i livelli di stress.
+                </p>
+                <button
+                  onClick={() => openNewCheckModal('presenza')}
+                  className="px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider text-neutral-950 transition-all cursor-pointer shadow-md"
+                  style={{ backgroundColor: config.primaryColor }}
+                >
+                  Registra il primo check
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {sortedCheckIns.map(check => renderCheckInCard(check))}
+              </div>
+            )}
           </div>
         )}
 
         {/* TAB: ANTROPOMETRIA */}
         {clientWorkspaceTab === 'antropometria' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Chart Column */}
-            <div className="lg:col-span-2 space-y-4">
-              {renderChart()}
-
-              {/* Rilevazioni History list */}
-              <div className="bg-[#181818] border border-white/5 rounded-2xl p-5 space-y-3">
-                <div className="flex justify-between items-center pb-2 border-b border-white/5">
-                  <span className="text-[10px] font-black uppercase text-white/50 tracking-wider">Cronologia Rilevazioni</span>
-                  <button
-                    onClick={onAddMeasurement}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-[10px] font-bold transition-all cursor-pointer"
-                  >
-                    <Plus className="w-3 h-3" />
-                    Nuova Rilevazione
-                  </button>
-                </div>
-
-                {sortedRilevazioni.length === 0 ? (
-                  <div className="p-8 text-center text-xs text-white/30 italic">
-                    Nessuna misurazione registrata per questo atleta.
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="border-b border-white/5 text-white/40 uppercase tracking-wider font-bold text-[9px]">
-                          <th className="p-2">Data</th>
-                          <th className="p-2">Peso (kg)</th>
-                          <th className="p-2">Vita (cm)</th>
-                          <th className="p-2">Torace (cm)</th>
-                          <th className="p-2">Braccio (cm)</th>
-                          <th className="p-2">Coscia (cm)</th>
-                          <th className="p-2">Massa Grassa</th>
-                          <th className="p-2 text-right">Azioni</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {[...sortedRilevazioni].reverse().map((r) => (
-                          <tr key={r.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
-                            <td className="p-2 font-bold text-white">{r.data.replace(/(\d{4})-(\d{2})-(\d{2})/, '$3/$2/$1')}</td>
-                            <td className="p-2 text-white/80">{r.peso} kg</td>
-                            <td className="p-2 text-white/80">{r.vita} cm</td>
-                            <td className="p-2 text-white/80">{r.torace} cm</td>
-                            <td className="p-2 text-white/80">{r.braccio} cm</td>
-                            <td className="p-2 text-white/80">{r.coscia} cm</td>
-                            <td className="p-2 text-white/80">{r.massaGrassa ? `${r.massaGrassa}%` : '—'}</td>
-                            <td className="p-2 text-right">
-                              <button
-                                onClick={() => onDeleteMeasurement(r.id)}
-                                className="p-1 rounded hover:bg-white/5 text-white/20 hover:text-red-400 transition-colors cursor-pointer"
-                                title="Elimina rilevazione"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Anthropometric specifications column */}
-            <div className="space-y-4">
-              {latestRilevazione && (
-                <div className="bg-[#181818] border border-white/5 rounded-2xl p-5 space-y-4">
-                  <div className="flex items-center gap-2 border-b border-white/5 pb-3">
-                    <Info className="w-4 h-4 text-white/40" />
-                    <h3 className="text-xs font-black uppercase tracking-wider text-white">Ultimi Dettagli Corporei</h3>
-                  </div>
-                  <div className="space-y-3.5 text-xs">
-                    <div className="flex justify-between border-b border-white/5 pb-2">
-                      <span className="text-white/40 font-medium">Peso:</span>
-                      <span className="text-white font-bold">{latestRilevazione.peso} kg</span>
-                    </div>
-                    <div className="flex justify-between border-b border-white/5 pb-2">
-                      <span className="text-white/40 font-medium">Circonferenza Vita:</span>
-                      <span className="text-white font-bold">{latestRilevazione.vita} cm</span>
-                    </div>
-                    <div className="flex justify-between border-b border-white/5 pb-2">
-                      <span className="text-white/40 font-medium">Torace:</span>
-                      <span className="text-white font-bold">{latestRilevazione.torace} cm</span>
-                    </div>
-                    <div className="flex justify-between border-b border-white/5 pb-2">
-                      <span className="text-white/40 font-medium">Braccio (Contratto):</span>
-                      <span className="text-white font-bold">{latestRilevazione.braccio} cm</span>
-                    </div>
-                    <div className="flex justify-between border-b border-white/5 pb-2">
-                      <span className="text-white/40 font-medium">Coscia:</span>
-                      <span className="text-white font-bold">{latestRilevazione.coscia} cm</span>
-                    </div>
-                    <div className="flex justify-between border-b border-white/5 pb-2">
-                      <span className="text-white/40 font-medium">Massa Grassa Stimata:</span>
-                      <span className="text-white font-bold">{latestRilevazione.massaGrassa ? `${latestRilevazione.massaGrassa}%` : 'N/D'}</span>
-                    </div>
-                    {latestRilevazione.noteControllo && (
-                      <div className="space-y-1 pt-1.5">
-                        <span className="text-white/30 text-[9px] font-bold uppercase tracking-wider block">Note Rilevazione:</span>
-                        <p className="text-white/70 italic text-[11px] leading-relaxed bg-black/25 p-2 rounded-lg border border-white/5">
-                          "{latestRilevazione.noteControllo}"
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Physical limitations alert card */}
-              <div className="bg-[#181818] border border-white/5 rounded-2xl p-5 space-y-3">
-                <div className="flex items-center gap-1.5 text-xs font-black text-rose-400 uppercase tracking-wider border-b border-white/5 pb-2">
-                  <ShieldAlert className="w-4 h-4 text-rose-400" />
-                  <span>Limitazioni Fisiche</span>
-                </div>
-                <p className="text-xs text-white/70 leading-relaxed bg-red-950/5 p-2 rounded-lg border border-red-950/20">
-                  {client.limitazioniFisiche || 'Nessuna limitazione o infortunio segnalato per questo atleta.'}
-                </p>
-              </div>
-            </div>
-          </div>
+          <ClientAnthropometry
+            client={client}
+            config={config}
+            onUpdateClient={onUpdateClient}
+            onShowToast={onShowToast}
+            onShowConfirm={onShowConfirm}
+            selectedMeasurementId={selectedMeasurementId}
+            onClearSelectedMeasurementId={() => setSelectedMeasurementId(null)}
+          />
         )}
 
         {/* TAB: ALLENAMENTO */}

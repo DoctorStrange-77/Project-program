@@ -222,24 +222,41 @@ export default function ClientManagement({
       return;
     }
 
-    const clientData: Client = {
-      id: editingClient ? editingClient.id : 'c_' + Date.now(),
-      nome: nome.trim(),
-      cognome: cognome.trim(),
-      eta: Number(eta),
-      sesso,
-      altezza: altezza ? Number(altezza) : undefined,
-      pesoAttuale: pesoAttuale ? Number(pesoAttuale) : undefined,
-      obiettivo: obiettivo.trim(),
-      livelloEsperienza,
-      allenamentiSettimanali,
-      dataInizio: dataInizio || undefined,
-      limitazioniFisiche: limitazioniFisiche.trim() || undefined,
-      noteCoach: noteCoach.trim() || undefined,
-      prossimoControllo: prossimoControllo || undefined,
-      // preserve measurements if editing
-      rilevazioni: editingClient ? editingClient.rilevazioni : []
-    };
+    const clientData: Client = editingClient
+      ? {
+          ...editingClient,
+          nome: nome.trim(),
+          cognome: cognome.trim(),
+          eta: Number(eta),
+          sesso,
+          altezza: altezza ? Number(altezza) : undefined,
+          pesoAttuale: pesoAttuale ? Number(pesoAttuale) : undefined,
+          obiettivo: obiettivo.trim(),
+          livelloEsperienza,
+          allenamentiSettimanali,
+          dataInizio: dataInizio || undefined,
+          limitazioniFisiche: limitazioniFisiche.trim() || undefined,
+          noteCoach: noteCoach.trim() || undefined,
+          prossimoControllo: prossimoControllo || undefined,
+        }
+      : {
+          id: 'c_' + Date.now(),
+          nome: nome.trim(),
+          cognome: cognome.trim(),
+          eta: Number(eta),
+          sesso,
+          altezza: altezza ? Number(altezza) : undefined,
+          pesoAttuale: pesoAttuale ? Number(pesoAttuale) : undefined,
+          obiettivo: obiettivo.trim(),
+          livelloEsperienza,
+          allenamentiSettimanali,
+          dataInizio: dataInizio || undefined,
+          limitazioniFisiche: limitazioniFisiche.trim() || undefined,
+          noteCoach: noteCoach.trim() || undefined,
+          prossimoControllo: prossimoControllo || undefined,
+          rilevazioni: [],
+          checkIns: []
+        };
 
     if (editingClient) {
       onUpdateClient(clientData);
@@ -475,6 +492,11 @@ export default function ClientManagement({
                 setShowMobileDetail(false);
               }}
               onShowToast={onShowToast}
+              onUpdateClient={(updatedClient) => {
+                onUpdateClient(updatedClient);
+                setSelectedClient(updatedClient);
+              }}
+              onShowConfirm={onShowConfirm}
             />
           </div>
         )}
