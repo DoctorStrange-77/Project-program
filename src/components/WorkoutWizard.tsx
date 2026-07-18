@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import { WorkoutExercisesList } from './WorkoutExercisesList';
 import { 
   Client, CoachConfig, Exercise, WorkoutPlan, WorkoutDay, 
   WorkoutExercise, Sesso, LivelloEsperienza, DistrettoMuscolare, 
@@ -15,7 +16,7 @@ import {
   Plus, Search, Filter, Dumbbell, Award, Calendar, FileText, Info, PlusCircle, 
   LayoutGrid, X, Link, Unlink, Sparkles, Save, CheckSquare, RotateCcw,
   Star, Video, Clipboard, Layers, RefreshCw, AlertCircle, TrendingUp, HelpCircle,
-  MoreHorizontal, Settings
+  MoreHorizontal, Settings, GripVertical, Eye
 } from 'lucide-react';
 import { 
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend,
@@ -353,6 +354,46 @@ export default function WorkoutWizard({
 
   // Analytics panel state
   const [showAnalytics, setShowAnalytics] = useState(false);
+
+  // View mode state ("table" | "cards")
+  const [workoutViewMode, setWorkoutViewMode] = useState<'table' | 'cards'>(() => {
+    try {
+      const saved = localStorage.getItem('workout-wizard-view-mode');
+      if (saved === 'table' || saved === 'cards') {
+        return saved;
+      }
+    } catch (e) {
+      console.error('Error reading workout-wizard-view-mode from localStorage:', e);
+    }
+    return 'table';
+  });
+
+  // Keep localStorage updated when state changes
+  useEffect(() => {
+    try {
+      localStorage.setItem('workout-wizard-view-mode', workoutViewMode);
+    } catch (e) {
+      console.error('Error writing workout-wizard-view-mode to localStorage:', e);
+    }
+  }, [workoutViewMode]);
+
+  // Expanded exercises on mobile
+  const [expandedExIds, setExpandedExIds] = useState<Record<string, boolean>>({});
+
+  const toggleExpandEx = (exId: string) => {
+    setExpandedExIds(prev => ({ ...prev, [exId]: !prev[exId] }));
+  };
+
+  // Note/technique editing modal state
+  const [textEditModal, setTextEditModal] = useState<{
+    dayId: string;
+    exId: string;
+    field: 'noteTecniche' | 'tecnicaIntensita';
+    title: string;
+    value: string;
+  } | null>(null);
+
+  const triggerRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
 
   // Exercise database selection modal search/filters
   const [isExerciseModalOpen, setIsExerciseModalOpen] = useState(false);
@@ -2847,10 +2888,50 @@ export default function WorkoutWizard({
           
           {/* Multi-Week Navigation & Management Header */}
           <div className="flex flex-col gap-4 p-5 bg-[#121212] border border-white/5 rounded-2xl shadow-xl">
-            <div className="flex justify-between items-center flex-wrap gap-2 pb-2 border-b border-white/5">
-              <div className="flex items-center gap-2">
-                <Layers className="w-4 h-4 text-white/60" />
-                <span className="text-xs font-black uppercase text-white/60 tracking-wider">Pianificazione Multi-Settimanale</span>
+            <div className="flex justify-between items-center flex-wrap gap-4 pb-2 border-b border-white/5">
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-white/60" />
+                  <span className="text-xs font-black uppercase text-white/60 tracking-wider">Pianificazione Multi-Settimanale</span>
+                </div>
+
+                {/* Selettore Vista compatto */}
+                <div className="flex items-center bg-black/40 p-1 rounded-xl border border-white/5 select-none" role="tablist">
+                  <button
+                    id="view-toggle-table"
+                    type="button"
+                    role="tab"
+                    aria-selected={workoutViewMode === 'table'}
+                    onClick={() => setWorkoutViewMode('table')}
+                    aria-label="Attiva Vista Tabella"
+                    className={`flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer rounded-lg focus:ring-1 focus:ring-[#CCFF00] focus:outline-none ${
+                      workoutViewMode === 'table'
+                        ? 'text-neutral-950'
+                        : 'text-white/50 hover:text-white hover:bg-white/5'
+                    }`}
+                    style={workoutViewMode === 'table' ? { backgroundColor: config.primaryColor } : {}}
+                  >
+                    <Layers className="w-3 h-3" />
+                    <span>Tabella</span>
+                  </button>
+                  <button
+                    id="view-toggle-cards"
+                    type="button"
+                    role="tab"
+                    aria-selected={workoutViewMode === 'cards'}
+                    onClick={() => setWorkoutViewMode('cards')}
+                    aria-label="Attiva Vista Schede"
+                    className={`flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer rounded-lg focus:ring-1 focus:ring-[#CCFF00] focus:outline-none ${
+                      workoutViewMode === 'cards'
+                        ? 'text-neutral-950'
+                        : 'text-white/50 hover:text-white hover:bg-white/5'
+                    }`}
+                    style={workoutViewMode === 'cards' ? { backgroundColor: config.primaryColor } : {}}
+                  >
+                    <LayoutGrid className="w-3 h-3" />
+                    <span>Schede</span>
+                  </button>
+                </div>
               </div>
               
               {/* Autosave timestamp */}
@@ -3509,11 +3590,43 @@ export default function WorkoutWizard({
               </div>
 
               {/* Added Exercises Table / Content */}
-              {day.esercizi.length === 0 ? (
+              <WorkoutExercisesList
+                day={day}
+                activeWeekIndex={activeWeekIndex}
+                weeks={weeks}
+                config={config}
+                workoutViewMode={workoutViewMode}
+                globalModifications={globalModifications}
+                groupSelectionDayId={groupSelectionDayId}
+                groupSelectionType={groupSelectionType}
+                selectedExerciseIds={selectedExerciseIds}
+                setSelectedExerciseIds={setSelectedExerciseIds}
+                activeActionMenuExId={activeActionMenuExId}
+                setActiveActionMenuExId={setActiveActionMenuExId}
+                handleUpdateExParam={handleUpdateExParam}
+                handleOpenBlocksManager={handleOpenBlocksManager}
+                handleDeleteEx={handleDeleteEx}
+                handleMoveEx={handleMoveEx}
+                handleDuplicateEx={handleDuplicateEx}
+                handleGroupWithNext={handleGroupWithNext}
+                handleDissolveSuperset={handleDissolveSuperset}
+                handleOpenSupersetSettings={handleOpenSupersetSettings}
+                handleDissolveTriset={handleDissolveTriset}
+                handleOpenTrisetSettings={handleOpenTrisetSettings}
+                handleDissolveCompoundSet={handleDissolveCompoundSet}
+                handleOpenCompoundSetSettings={handleOpenCompoundSetSettings}
+                handleDissolveGiantSet={handleDissolveGiantSet}
+                handleOpenGiantSetSettings={handleOpenGiantSetSettings}
+                handleDissolveJumpset={handleDissolveJumpset}
+                handleOpenJumpsetSettings={handleOpenJumpsetSettings}
+                handleDissolveCircuit={handleDissolveCircuit}
+                handleOpenCircuitSettings={handleOpenCircuitSettings}
+              />
+              {false && day.esercizi.length === 0 ? (
                 <div className="border border-dashed border-white/5 bg-black/10 p-8 rounded-xl text-center text-white/25">
                   <p className="text-xs">Nessun esercizio inserito per questa giornata. Clicca "Aggiungi esercizio" in alto per iniziare.</p>
                 </div>
-              ) : (
+              ) : false && (
                 <div className="overflow-auto w-full max-h-[600px] rounded-xl border border-white/5 bg-black/20 scrollbar-thin">
                   <table 
                     className="w-full text-left border-collapse table-fixed"
