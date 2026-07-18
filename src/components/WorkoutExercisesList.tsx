@@ -238,6 +238,32 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
     );
   };
 
+  // Keep track of which trigger element opened the menu
+  const [openedTriggerId, setOpenedTriggerId] = useState<string | null>(null);
+  
+  // Dynamic action menu dimensions
+  const [menuDimensions, setMenuDimensions] = useState({ width: 192, height: 240 });
+  const menuRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Centralized action menu close function
+  const closeActionMenu = () => {
+    setActiveActionMenuExId(null);
+    setMenuAnchorRect(null);
+    setActiveMenuData(null);
+    if (openedTriggerId) {
+      const trigger = document.getElementById(openedTriggerId);
+      if (trigger) {
+        trigger.focus();
+      }
+      setOpenedTriggerId(null);
+    }
+  };
+
+  // Close menu when view mode or active week changes
+  useEffect(() => {
+    closeActionMenu();
+  }, [workoutViewMode, activeWeekIndex]);
+
   // Action Menu Portal Handlers
   const handleOpenActionMenu = (
     e: React.MouseEvent<HTMLButtonElement>,
@@ -247,15 +273,15 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
     normalizedGroupType?: ExerciseGroupType
   ) => {
     e.stopPropagation();
+    const triggerId = e.currentTarget.id;
     if (activeActionMenuExId === `ex_${ex.id}`) {
-      setActiveActionMenuExId(null);
-      setMenuAnchorRect(null);
-      setActiveMenuData(null);
+      closeActionMenu();
     } else {
       setActiveActionMenuExId(`ex_${ex.id}`);
       const rect = e.currentTarget.getBoundingClientRect();
       setMenuAnchorRect(rect);
       setActiveMenuData({ ex, exIdx, isInGroup, normalizedGroupType });
+      setOpenedTriggerId(triggerId);
     }
   };
 
@@ -273,9 +299,7 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
       if (element) {
         setMenuAnchorRect(element.getBoundingClientRect());
       } else {
-        setActiveActionMenuExId(null);
-        setMenuAnchorRect(null);
-        setActiveMenuData(null);
+        closeActionMenu();
       }
     };
 
@@ -286,6 +310,21 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
       window.removeEventListener('scroll', updateMenuPosition, true);
       window.removeEventListener('resize', updateMenuPosition);
     };
+  }, [activeActionMenuExId, activeMenuData, openedTriggerId]);
+
+  // Measure portal menu size dynamically after render
+  useEffect(() => {
+    if (activeActionMenuExId && menuRef.current) {
+      const rect = menuRef.current.getBoundingClientRect();
+      if (rect.height > 0 && rect.width > 0) {
+        setMenuDimensions({ width: rect.width, height: rect.height });
+      }
+      // Focus first non-disabled button for accessibility
+      const focusable = menuRef.current.querySelector('button:not([disabled])') as HTMLButtonElement;
+      if (focusable) {
+        focusable.focus();
+      }
+    }
   }, [activeActionMenuExId, activeMenuData]);
 
   // Handle outside clicks and ESC key for Action Menu
@@ -294,9 +333,7 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setActiveActionMenuExId(null);
-        setMenuAnchorRect(null);
-        setActiveMenuData(null);
+        closeActionMenu();
       }
     };
 
@@ -319,9 +356,7 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
         }
       }
 
-      setActiveActionMenuExId(null);
-      setMenuAnchorRect(null);
-      setActiveMenuData(null);
+      closeActionMenu();
     };
 
     document.addEventListener('keydown', handleKeyDown);
@@ -331,22 +366,66 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [activeActionMenuExId, activeMenuData]);
+  }, [activeActionMenuExId, activeMenuData, openedTriggerId]);
+
+  // Keyboard navigation trap within Portal Menu
+  const handlePortalKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Tab') {
+      if (!menuRef.current) return;
+      const focusables = Array.from(menuRef.current.querySelectorAll('button:not([disabled])')) as HTMLElement[];
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      
+      if (e.shiftKey) {
+        if (document.activeElement === first) {
+          last.focus();
+          e.preventDefault();
+        }
+      } else {
+        if (document.activeElement === last) {
+          first.focus();
+          e.preventDefault();
+        }
+      }
+    } else if (e.key === 'Escape') {
+      closeActionMenu();
+      e.preventDefault();
+    }
+  };
 
   // Position calculation for Fixed Portal Menu
   const getMenuStyles = () => {
     if (!menuAnchorRect) return { display: 'none' };
 
-    const menuWidth = 192; // w-48 is 192px
-    const menuHeight = 240; // Approximate maximum menu height
+    const menuWidth = menuDimensions.width;
+    const menuHeight = menuDimensions.height;
     const padding = 8;
 
     let fixedTop = menuAnchorRect.bottom + 4;
     let fixedLeft = menuAnchorRect.right - menuWidth;
 
     const spaceBelow = window.innerHeight - menuAnchorRect.bottom;
-    if (spaceBelow < menuHeight && menuAnchorRect.top > menuHeight) {
+    const spaceAbove = menuAnchorRect.top;
+
+    // Se non c'è spazio sotto, proviamo ad aprirci sopra
+    if (spaceBelow < menuHeight && spaceAbove > menuHeight) {
       fixedTop = menuAnchorRect.top - menuHeight - 4;
+    } else if (spaceBelow < menuHeight && spaceBelow < spaceAbove) {
+      // Se non c'è spazio sufficiente né sopra né sotto, apriamo dove c'è più spazio
+      if (spaceAbove > spaceBelow) {
+        fixedTop = padding;
+      } else {
+        fixedTop = menuAnchorRect.bottom + 4;
+      }
+    }
+
+    // Assicuriamoci che non esca mai dai bordi superiore/inferiore (almeno 8px di distanza)
+    if (fixedTop < padding) {
+      fixedTop = padding;
+    }
+    if (fixedTop + menuHeight > window.innerHeight - padding) {
+      fixedTop = window.innerHeight - menuHeight - padding;
     }
 
     if (fixedLeft + menuWidth > window.innerWidth - padding) {
@@ -356,11 +435,16 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
       fixedLeft = padding;
     }
 
+    // Calcoliamo maxHeight per lo scroll se lo spazio è comunque insufficiente
+    const maxAvailableHeight = window.innerHeight - fixedTop - padding;
+
     return {
       position: 'fixed' as const,
       top: `${fixedTop}px`,
       left: `${fixedLeft}px`,
       width: `${menuWidth}px`,
+      maxHeight: `${maxAvailableHeight}px`,
+      overflowY: 'auto' as const,
       zIndex: 9999,
     };
   };
@@ -1501,16 +1585,22 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
 
       {/* Note/Technique Modal */}
       {textEditModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+        <div 
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-title"
+        >
           <div className="bg-[#121212] border border-white/10 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl animate-fadeIn">
             <div className="p-4 border-b border-white/5 flex justify-between items-center bg-black/20">
-              <span className="text-xs font-black uppercase text-white/80 tracking-wider">
+              <span id="modal-title" className="text-xs font-black uppercase text-white/80 tracking-wider">
                 {textEditModal.title}
               </span>
               <button
                 type="button"
                 onClick={() => setTextEditModal(null)}
                 className="p-1.5 rounded-lg bg-black/40 border border-white/5 text-white/40 hover:text-white hover:bg-neutral-900 transition-all cursor-pointer"
+                aria-label="Chiudi modale note"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1552,6 +1642,272 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Action Menu Portal */}
+      {activeActionMenuExId && activeMenuData && menuAnchorRect && createPortal(
+        <div
+          id="portal-action-menu"
+          ref={menuRef}
+          style={getMenuStyles()}
+          onKeyDown={handlePortalKeyDown}
+          className="bg-neutral-900 border border-white/10 rounded-xl shadow-2xl py-1 text-left select-none animate-fadeIn flex flex-col"
+          role="menu"
+          aria-label="Azioni esercizio"
+        >
+          {(() => {
+            const { ex, exIdx, isInGroup, normalizedGroupType } = activeMenuData;
+            return (
+              <>
+                {/* SuperSet Toggle */}
+                {exIdx < day.esercizi.length - 1 && !isInGroup && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      handleGroupWithNext(day.id, exIdx);
+                      closeActionMenu();
+                    }}
+                    className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Link className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                    <span>Unisci in Super Set</span>
+                  </button>
+                )}
+                {ex.groupId && normalizedGroupType === 'superset' && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleDissolveSuperset(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Unlink className="w-3.5 h-3.5" />
+                      <span>Sciogli Superset</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleOpenSupersetSettings(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                      <span>Impostazioni Superset</span>
+                    </button>
+                  </>
+                )}
+
+                {ex.groupId && normalizedGroupType === 'triset' && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleDissolveTriset(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Unlink className="w-3.5 h-3.5" />
+                      <span>Sciogli Triset</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleOpenTrisetSettings(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                      <span>Impostazioni Triset</span>
+                    </button>
+                  </>
+                )}
+
+                {ex.groupId && normalizedGroupType === 'compound_set' && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleDissolveCompoundSet(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Unlink className="w-3.5 h-3.5" />
+                      <span>Sciogli Compound Set</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleOpenCompoundSetSettings(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                      <span>Impostazioni Compound Set</span>
+                    </button>
+                  </>
+                )}
+
+                {ex.groupId && normalizedGroupType === 'giant_set' && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleDissolveGiantSet(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Unlink className="w-3.5 h-3.5" />
+                      <span>Sciogli Giant Set</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleOpenGiantSetSettings(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                      <span>Impostazioni Giant Set</span>
+                    </button>
+                  </>
+                )}
+
+                {ex.groupId && normalizedGroupType === 'jumpset' && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleDissolveJumpset(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Unlink className="w-3.5 h-3.5" />
+                      <span>Sciogli Jumpset</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleOpenJumpsetSettings(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                      <span>Impostazioni Jumpset</span>
+                    </button>
+                  </>
+                )}
+
+                {ex.groupId && normalizedGroupType === 'circuit' && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleDissolveCircuit(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Unlink className="w-3.5 h-3.5" />
+                      <span>Sciogli Circuito</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleOpenCircuitSettings(day.id, ex.groupId!);
+                        closeActionMenu();
+                      }}
+                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                      <span>Impostazioni Circuito</span>
+                    </button>
+                  </>
+                )}
+
+                {/* Sposta su / giù */}
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={exIdx === 0}
+                  onClick={() => {
+                    handleMoveEx(day.id, ex.id, 'up');
+                    closeActionMenu();
+                  }}
+                  className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1.5 cursor-pointer text-left"
+                >
+                  <ArrowUp className="w-3.5 h-3.5" />
+                  <span>Sposta su</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={exIdx === day.esercizi.length - 1}
+                  onClick={() => {
+                    handleMoveEx(day.id, ex.id, 'down');
+                    closeActionMenu();
+                  }}
+                  className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1.5 cursor-pointer text-left"
+                >
+                  <ArrowDown className="w-3.5 h-3.5" />
+                  <span>Sposta giù</span>
+                </button>
+
+                {/* Duplica */}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    handleDuplicateEx(day.id, ex);
+                    closeActionMenu();
+                  }}
+                  className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer text-left"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Duplica</span>
+                </button>
+
+                {/* Elimina */}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    handleDeleteEx(day.id, ex.id);
+                    closeActionMenu();
+                  }}
+                  className="w-full px-3 py-1.5 text-[11px] text-red-400 hover:bg-white/5 flex items-center gap-1.5 border-t border-white/5 mt-1 cursor-pointer text-left"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Rimuovi</span>
+                </button>
+              </>
+            );
+          })()}
+        </div>,
+        document.body
       )}
     </div>
   );
