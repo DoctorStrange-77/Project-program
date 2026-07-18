@@ -396,54 +396,64 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
 
   // Position calculation for Fixed Portal Menu
   const getMenuStyles = () => {
+    if (typeof window === "undefined") {
+      return { display: "none" };
+    }
+
     if (!menuAnchorRect) return { display: 'none' };
 
-    const menuWidth = menuDimensions.width;
-    const menuHeight = menuDimensions.height;
     const padding = 8;
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
 
+    const menuWidth = menuDimensions.width;
+    const maxMenuHeight = Math.max(120, viewportHeight - padding * 2);
+    const effectiveMenuHeight = Math.min(
+      menuDimensions.height,
+      maxMenuHeight
+    );
+
+    // Calcola prima la posizione desiderata sotto o sopra il trigger.
     let fixedTop = menuAnchorRect.bottom + 4;
     let fixedLeft = menuAnchorRect.right - menuWidth;
 
-    const spaceBelow = window.innerHeight - menuAnchorRect.bottom;
+    const spaceBelow = viewportHeight - menuAnchorRect.bottom;
     const spaceAbove = menuAnchorRect.top;
 
     // Se non c'è spazio sotto, proviamo ad aprirci sopra
-    if (spaceBelow < menuHeight && spaceAbove > menuHeight) {
-      fixedTop = menuAnchorRect.top - menuHeight - 4;
-    } else if (spaceBelow < menuHeight && spaceBelow < spaceAbove) {
+    if (spaceBelow < effectiveMenuHeight && spaceAbove > effectiveMenuHeight) {
+      fixedTop = menuAnchorRect.top - effectiveMenuHeight - 4;
+    } else if (spaceBelow < effectiveMenuHeight && spaceBelow < spaceAbove) {
       // Se non c'è spazio sufficiente né sopra né sotto, apriamo dove c'è più spazio
       if (spaceAbove > spaceBelow) {
-        fixedTop = padding;
+        fixedTop = menuAnchorRect.top - effectiveMenuHeight - 4;
       } else {
         fixedTop = menuAnchorRect.bottom + 4;
       }
     }
 
-    // Assicuriamoci che non esca mai dai bordi superiore/inferiore (almeno 8px di distanza)
-    if (fixedTop < padding) {
-      fixedTop = padding;
-    }
-    if (fixedTop + menuHeight > window.innerHeight - padding) {
-      fixedTop = window.innerHeight - menuHeight - padding;
-    }
+    // Successivamente applica sempre il clamp finale:
+    fixedTop = Math.max(
+      padding,
+      Math.min(
+        fixedTop,
+        viewportHeight - effectiveMenuHeight - padding
+      )
+    );
 
-    if (fixedLeft + menuWidth > window.innerWidth - padding) {
-      fixedLeft = window.innerWidth - menuWidth - padding;
+    if (fixedLeft + menuWidth > viewportWidth - padding) {
+      fixedLeft = viewportWidth - menuWidth - padding;
     }
     if (fixedLeft < padding) {
       fixedLeft = padding;
     }
-
-    // Calcoliamo maxHeight per lo scroll se lo spazio è comunque insufficiente
-    const maxAvailableHeight = window.innerHeight - fixedTop - padding;
 
     return {
       position: 'fixed' as const,
       top: `${fixedTop}px`,
       left: `${fixedLeft}px`,
       width: `${menuWidth}px`,
-      maxHeight: `${maxAvailableHeight}px`,
+      maxHeight: `${maxMenuHeight}px`,
       overflowY: 'auto' as const,
       zIndex: 9999,
     };
@@ -1107,6 +1117,7 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
           </thead>
           <tbody>
             {processedExercises.map(({ ex, exIdx, isInGroup, groupId, normalizedGroupType, groupIndex, memberLabel, isGroupLeader, groupSummary }) => {
+              const selectionState = getExerciseGroupSelectionState(ex);
               return (
                 <tr 
                   key={ex.id} 
@@ -1118,18 +1129,11 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
                     <td className="p-2 text-center border-r border-white/5 bg-black/10">
                       <input
                         type="checkbox"
-                        checked={selectedExerciseIds.includes(ex.id)}
-                        disabled={isInGroup || (groupSelectionType === 'compound_set' && selectedExerciseIds.length === 1 && day.esercizi.find(e => e.id === selectedExerciseIds[0])?.distrettoMuscolare !== ex.distrettoMuscolare) || (groupSelectionType === 'jumpset' && selectedExerciseIds.length === 1 && day.esercizi.find(e => e.id === selectedExerciseIds[0])?.distrettoMuscolare === ex.distrettoMuscolare) || (selectedExerciseIds.length >= getRequiredCountHelper(groupSelectionType) && !selectedExerciseIds.includes(ex.id))}
-                        onChange={(e) => {
-                          const maxCount = getRequiredCountHelper(groupSelectionType);
-                          if (e.target.checked) {
-                            if (selectedExerciseIds.length < maxCount) {
-                              setSelectedExerciseIds(prev => [...prev, ex.id]);
-                            }
-                          } else {
-                            setSelectedExerciseIds(prev => prev.filter(id => id !== ex.id));
-                          }
-                        }}
+                        checked={selectionState.selected}
+                        disabled={selectionState.disabled}
+                        onChange={(event) =>
+                          handleToggleExerciseSelection(ex.id, event.target.checked)
+                        }
                         className="h-4 w-4 rounded border-white/20 bg-black text-[#CCFF00] focus:ring-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed mx-auto"
                         style={{ accentColor: config.primaryColor }}
                         aria-label={`Seleziona ${ex.nome}`}
@@ -1165,6 +1169,12 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
                         )}
                       </div>
                       <span className="text-[10px] text-white/45 font-bold uppercase tracking-wider mt-0.5">{ex.distrettoMuscolare}</span>
+
+                      {groupSelectionDayId === day.id && selectionState.disabled && selectionState.reason && (
+                        <p className="text-[10px] text-amber-400 font-medium leading-tight mt-1 max-w-[250px] select-none">
+                          {selectionState.reason}
+                        </p>
+                      )}
 
                       {/* Group summary block */}
                       {groupSummary && (() => {
@@ -1309,24 +1319,7 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
 
                   {/* 10. Tecnica */}
                   <td className="p-2 border-r border-white/5">
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="truncate text-xs text-white/80" title={ex.tecnicaIntensita || 'Standard'}>
-                        {ex.tecnicaIntensita || 'Standard'}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setTextEditModal({
-                          exId: ex.id,
-                          field: 'tecnicaIntensita',
-                          title: 'Modifica Tecnica di Intensità',
-                          value: ex.tecnicaIntensita || ''
-                        })}
-                        className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#CCFF00] cursor-pointer shrink-0"
-                        aria-label="Modifica tecnica"
-                      >
-                        <Settings className="w-3 h-3" />
-                      </button>
-                    </div>
+                    {renderTecnicaSelect(ex, false)}
                   </td>
 
                   {/* 11. Note */}
@@ -1336,13 +1329,9 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
                         {ex.noteTecniche || '—'}
                       </span>
                       <button
+                        id={`trigger-notes-table-${ex.id}`}
                         type="button"
-                        onClick={() => setTextEditModal({
-                          exId: ex.id,
-                          field: 'noteTecniche',
-                          title: 'Modifica Note Tecniche',
-                          value: ex.noteTecniche || ''
-                        })}
+                        onClick={() => openNotesModal(ex.id, ex.noteTecniche || '', `trigger-notes-table-${ex.id}`)}
                         className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#CCFF00] cursor-pointer shrink-0"
                         aria-label="Modifica note"
                       >
@@ -1523,35 +1512,18 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
                     </div>
                     <div className="flex justify-between items-center bg-black/10 p-1.5 rounded-lg border border-white/5">
                       <span className="text-[9px] font-bold text-white/35 uppercase tracking-wider">Tecnica:</span>
-                      <div className="flex items-center gap-1">
-                        <span className="font-semibold text-white/70 max-w-[150px] truncate">{ex.tecnicaIntensita || 'Standard'}</span>
-                        <button
-                          type="button"
-                          onClick={() => setTextEditModal({
-                            exId: ex.id,
-                            field: 'tecnicaIntensita',
-                            title: 'Modifica Tecnica di Intensità',
-                            value: ex.tecnicaIntensita || ''
-                          })}
-                          className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-white"
-                        >
-                          <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
-                        </button>
-                      </div>
+                      {renderTecnicaSelect(ex, true)}
                     </div>
                     <div className="flex justify-between items-center bg-black/10 p-1.5 rounded-lg border border-white/5">
                       <span className="text-[9px] font-bold text-white/35 uppercase tracking-wider">Note:</span>
                       <div className="flex items-center gap-1">
                         <span className="text-white/50 max-w-[150px] truncate">{ex.noteTecniche || '—'}</span>
                         <button
+                          id={`trigger-notes-mobile-${ex.id}`}
                           type="button"
-                          onClick={() => setTextEditModal({
-                            exId: ex.id,
-                            field: 'noteTecniche',
-                            title: 'Modifica Note Tecniche',
-                            value: ex.noteTecniche || ''
-                          })}
-                          className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-white"
+                          onClick={() => openNotesModal(ex.id, ex.noteTecniche || '', `trigger-notes-mobile-${ex.id}`)}
+                          className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-white cursor-pointer"
+                          aria-label={`Modifica note per ${ex.nome}`}
                         >
                           <FileText className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
                         </button>
