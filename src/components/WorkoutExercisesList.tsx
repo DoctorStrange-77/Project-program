@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   WorkoutDay, WorkoutExercise, WorkoutWeek, CoachConfig, 
   ExerciseGroupType, EXERCISE_GROUP_LABELS 
@@ -6,7 +7,7 @@ import {
 import { 
   Layers, Video, MoreHorizontal, Settings, FileText, Link, 
   Unlink, ArrowUp, ArrowDown, Copy, Trash2, ChevronLeft, 
-  ChevronRight, GripVertical, X, Sparkles
+  ChevronRight, GripVertical, X
 } from 'lucide-react';
 import { 
   normalizeExerciseGroupType, 
@@ -88,12 +89,24 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
     setExpandedExIds(prev => ({ ...prev, [exId]: !prev[exId] }));
   };
 
-  // Note/technique editing modal state
+  // Note editing modal state
   const [textEditModal, setTextEditModal] = useState<{
-    field: 'noteTecniche' | 'tecnicaIntensita';
+    field: 'noteTecniche';
     title: string;
     value: string;
     exId: string;
+  } | null>(null);
+
+  // Focus and trigger tracking for Accessibility
+  const [modalTriggerId, setModalTriggerId] = useState<string | null>(null);
+
+  // State for active menu position/trigger for Portal Menu
+  const [menuAnchorRect, setMenuAnchorRect] = useState<DOMRect | null>(null);
+  const [activeMenuData, setActiveMenuData] = useState<{
+    ex: WorkoutExercise;
+    exIdx: number;
+    isInGroup: boolean;
+    normalizedGroupType?: ExerciseGroupType;
   } | null>(null);
 
   // Helper inside component to avoid import dependency issues
@@ -107,6 +120,296 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
     return 0;
   };
 
+  // Centralized selection helpers
+  const getExerciseGroupSelectionState = (exercise: WorkoutExercise) => {
+    const isSelected = selectedExerciseIds.includes(exercise.id);
+    
+    // 1. If already in a group
+    if (exercise.groupId && typeof exercise.groupId === 'string' && exercise.groupId.trim() !== '') {
+      return {
+        selected: isSelected,
+        disabled: true,
+        reason: "Questo esercizio appartiene già a un gruppo."
+      };
+    }
+
+    const maxCount = getRequiredCountHelper(groupSelectionType);
+
+    // 2. If max count reached
+    if (selectedExerciseIds.length >= maxCount && !isSelected) {
+      return {
+        selected: isSelected,
+        disabled: true,
+        reason: "Hai già selezionato il numero massimo di esercizi."
+      };
+    }
+
+    // Find first selected exercise to apply multi-exercise constraints
+    const firstSelectedId = selectedExerciseIds[0];
+    const firstSelected = firstSelectedId ? day.esercizi.find(e => e.id === firstSelectedId) : null;
+
+    if (firstSelected && !isSelected) {
+      // 3. Compound set constraint (same muscle)
+      if (groupSelectionType === 'compound_set') {
+        if (firstSelected.distrettoMuscolare !== exercise.distrettoMuscolare) {
+          return {
+            selected: isSelected,
+            disabled: true,
+            reason: "Il Compound Set richiede esercizi dello stesso distretto muscolare."
+          };
+        }
+      }
+
+      // 4. Jumpset constraint (different muscles)
+      if (groupSelectionType === 'jumpset') {
+        if (firstSelected.distrettoMuscolare === exercise.distrettoMuscolare) {
+          return {
+            selected: isSelected,
+            disabled: true,
+            reason: "Il Jumpset richiede due distretti muscolari differenti."
+          };
+        }
+      }
+    }
+
+    return {
+      selected: isSelected,
+      disabled: false
+    };
+  };
+
+  const handleToggleExerciseSelection = (exerciseId: string, checked: boolean) => {
+    if (checked) {
+      const ex = day.esercizi.find(e => e.id === exerciseId);
+      if (!ex) return;
+      const state = getExerciseGroupSelectionState(ex);
+      if (state.disabled) return;
+      
+      const maxCount = getRequiredCountHelper(groupSelectionType);
+      if (selectedExerciseIds.length < maxCount) {
+        setSelectedExerciseIds(prev => [...prev, exerciseId]);
+      }
+    } else {
+      setSelectedExerciseIds(prev => prev.filter(id => id !== exerciseId));
+    }
+  };
+
+  // Intensity Technique select option lists
+  const VALID_TECNICHE = [
+    'Nessuna',
+    'Top set',
+    'Back-off',
+    'Drop set',
+    'Rest pause',
+    'Myo-reps',
+    'Cluster set'
+  ];
+
+  // Helper to render the select for Tecnica di Intensità
+  const renderTecnicaSelect = (ex: WorkoutExercise, isMobile: boolean = false) => {
+    const currentValue = ex.tecnicaIntensita || 'Nessuna';
+    const isLegacy = currentValue && !VALID_TECNICHE.includes(currentValue);
+
+    return (
+      <select
+        value={currentValue}
+        onChange={(e) => {
+          const val = e.target.value;
+          handleUpdateExParam(day.id, ex.id, 'tecnicaIntensita', val === 'Nessuna' ? '' : val);
+        }}
+        className={`bg-transparent border-b border-white/10 text-white text-xs focus:outline-none focus:border-[#CCFF00]/50 py-0.5 cursor-pointer max-w-full ${
+          isMobile ? 'w-full text-right' : 'w-full text-left'
+        }`}
+        aria-label={isMobile ? "Seleziona tecnica di intensità mobile" : "Seleziona tecnica di intensità"}
+      >
+        {isLegacy && (
+          <option value={currentValue} className="bg-neutral-900 text-amber-400">
+            {currentValue} (Legacy)
+          </option>
+        )}
+        <option value="Nessuna" className="bg-neutral-900 text-white">Standard</option>
+        <option value="Top set" className="bg-neutral-900 text-white">Top set</option>
+        <option value="Back-off" className="bg-neutral-900 text-white">Back-off</option>
+        <option value="Drop set" className="bg-neutral-900 text-white">Drop set</option>
+        <option value="Rest pause" className="bg-neutral-900 text-white">Rest pause</option>
+        <option value="Myo-reps" className="bg-neutral-900 text-white">Myo-reps</option>
+        <option value="Cluster set" className="bg-neutral-900 text-white">Cluster set</option>
+      </select>
+    );
+  };
+
+  // Action Menu Portal Handlers
+  const handleOpenActionMenu = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    ex: WorkoutExercise,
+    exIdx: number,
+    isInGroup: boolean,
+    normalizedGroupType?: ExerciseGroupType
+  ) => {
+    e.stopPropagation();
+    if (activeActionMenuExId === `ex_${ex.id}`) {
+      setActiveActionMenuExId(null);
+      setMenuAnchorRect(null);
+      setActiveMenuData(null);
+    } else {
+      setActiveActionMenuExId(`ex_${ex.id}`);
+      const rect = e.currentTarget.getBoundingClientRect();
+      setMenuAnchorRect(rect);
+      setActiveMenuData({ ex, exIdx, isInGroup, normalizedGroupType });
+    }
+  };
+
+  // Update Portal Menu Position during scroll/resize
+  useEffect(() => {
+    if (!activeActionMenuExId || !activeMenuData) return;
+
+    const updateMenuPosition = () => {
+      const exId = activeMenuData.ex.id;
+      const element = 
+        document.getElementById(`trigger-actions-table-${exId}`) ||
+        document.getElementById(`trigger-actions-card-${exId}`) ||
+        document.getElementById(`trigger-actions-mobile-${exId}`);
+      
+      if (element) {
+        setMenuAnchorRect(element.getBoundingClientRect());
+      } else {
+        setActiveActionMenuExId(null);
+        setMenuAnchorRect(null);
+        setActiveMenuData(null);
+      }
+    };
+
+    window.addEventListener('scroll', updateMenuPosition, true);
+    window.addEventListener('resize', updateMenuPosition);
+
+    return () => {
+      window.removeEventListener('scroll', updateMenuPosition, true);
+      window.removeEventListener('resize', updateMenuPosition);
+    };
+  }, [activeActionMenuExId, activeMenuData]);
+
+  // Handle outside clicks and ESC key for Action Menu
+  useEffect(() => {
+    if (!activeActionMenuExId) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setActiveActionMenuExId(null);
+        setMenuAnchorRect(null);
+        setActiveMenuData(null);
+      }
+    };
+
+    const handleClickOutside = (e: MouseEvent) => {
+      const menuEl = document.getElementById('portal-action-menu');
+      if (menuEl && menuEl.contains(e.target as Node)) {
+        return;
+      }
+      const activeExId = activeMenuData?.ex?.id;
+      if (activeExId) {
+        const trigger1 = document.getElementById(`trigger-actions-table-${activeExId}`);
+        const trigger2 = document.getElementById(`trigger-actions-card-${activeExId}`);
+        const trigger3 = document.getElementById(`trigger-actions-mobile-${activeExId}`);
+        if (
+          (trigger1 && trigger1.contains(e.target as Node)) ||
+          (trigger2 && trigger2.contains(e.target as Node)) ||
+          (trigger3 && trigger3.contains(e.target as Node))
+        ) {
+          return;
+        }
+      }
+
+      setActiveActionMenuExId(null);
+      setMenuAnchorRect(null);
+      setActiveMenuData(null);
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('mousedown', handleClickOutside);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [activeActionMenuExId, activeMenuData]);
+
+  // Position calculation for Fixed Portal Menu
+  const getMenuStyles = () => {
+    if (!menuAnchorRect) return { display: 'none' };
+
+    const menuWidth = 192; // w-48 is 192px
+    const menuHeight = 240; // Approximate maximum menu height
+    const padding = 8;
+
+    let fixedTop = menuAnchorRect.bottom + 4;
+    let fixedLeft = menuAnchorRect.right - menuWidth;
+
+    const spaceBelow = window.innerHeight - menuAnchorRect.bottom;
+    if (spaceBelow < menuHeight && menuAnchorRect.top > menuHeight) {
+      fixedTop = menuAnchorRect.top - menuHeight - 4;
+    }
+
+    if (fixedLeft + menuWidth > window.innerWidth - padding) {
+      fixedLeft = window.innerWidth - menuWidth - padding;
+    }
+    if (fixedLeft < padding) {
+      fixedLeft = padding;
+    }
+
+    return {
+      position: 'fixed' as const,
+      top: `${fixedTop}px`,
+      left: `${fixedLeft}px`,
+      width: `${menuWidth}px`,
+      zIndex: 9999,
+    };
+  };
+
+  // Render notes edit modal helper
+  const openNotesModal = (exId: string, value: string, triggerButtonId: string) => {
+    setModalTriggerId(triggerButtonId);
+    setTextEditModal({
+      field: 'noteTecniche',
+      title: 'Modifica Note Tecniche',
+      value: value,
+      exId: exId
+    });
+  };
+
+  // Accessibility effect for Notes modal
+  useEffect(() => {
+    if (textEditModal) {
+      setTimeout(() => {
+        const textarea = document.getElementById('modal-text-edit');
+        if (textarea) {
+          textarea.focus();
+        }
+      }, 50);
+    } else if (modalTriggerId) {
+      const trigger = document.getElementById(modalTriggerId);
+      if (trigger) {
+        trigger.focus();
+      }
+      setModalTriggerId(null);
+    }
+  }, [textEditModal, modalTriggerId]);
+
+  // Accessibility escape key listener for Notes Modal
+  useEffect(() => {
+    if (!textEditModal) return;
+
+    const handleModalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setTextEditModal(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleModalKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleModalKeyDown);
+    };
+  }, [textEditModal]);
+
   if (day.esercizi.length === 0) {
     return (
       <div className="border border-dashed border-white/5 bg-black/10 p-8 rounded-xl text-center text-white/25 select-none">
@@ -114,6 +417,7 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
       </div>
     );
   }
+
 
   // Pre-process groups
   const processedExercises = (() => {
@@ -167,480 +471,486 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
     return sum + sets;
   }, 0) || 0;
 
-  // Render standard action menu options
-  const renderActionMenuContent = (ex: WorkoutExercise, exIdx: number, isInGroup: boolean, normalizedGroupType?: ExerciseGroupType) => {
-    return (
-      <div className="absolute right-0 mt-1 w-48 bg-neutral-900 border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden py-1 text-left">
-        {/* SuperSet Toggle */}
-        {exIdx < day.esercizi.length - 1 && !isInGroup && (
-          <button
-            type="button"
-            onClick={() => {
-              handleGroupWithNext(day.id, exIdx);
-              setActiveActionMenuExId(null);
-            }}
-            className="w-full px-3 py-2 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-          >
-            <Link className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
-            <span>Unisci in Super Set</span>
-          </button>
-        )}
-        
-        {ex.groupId && normalizedGroupType === 'superset' && (
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                handleDissolveSuperset(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Unlink className="w-3.5 h-3.5" />
-              <span>Sciogli Superset</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                handleOpenSupersetSettings(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
-              <span>Impostazioni Superset</span>
-            </button>
-          </>
-        )}
-
-        {ex.groupId && normalizedGroupType === 'triset' && (
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                handleDissolveTriset(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Unlink className="w-3.5 h-3.5" />
-              <span>Sciogli Triset</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                handleOpenTrisetSettings(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
-              <span>Impostazioni Triset</span>
-            </button>
-          </>
-        )}
-
-        {ex.groupId && normalizedGroupType === 'compound_set' && (
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                handleDissolveCompoundSet(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Unlink className="w-3.5 h-3.5" />
-              <span>Sciogli Compound Set</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                handleOpenCompoundSetSettings(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
-              <span>Impostazioni Compound Set</span>
-            </button>
-          </>
-        )}
-
-        {ex.groupId && normalizedGroupType === 'giant_set' && (
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                handleDissolveGiantSet(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Unlink className="w-3.5 h-3.5" />
-              <span>Sciogli Giant Set</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                handleOpenGiantSetSettings(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
-              <span>Impostazioni Giant Set</span>
-            </button>
-          </>
-        )}
-
-        {ex.groupId && normalizedGroupType === 'jumpset' && (
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                handleDissolveJumpset(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Unlink className="w-3.5 h-3.5" />
-              <span>Sciogli Jumpset</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                handleOpenJumpsetSettings(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
-              <span>Impostazioni Jumpset</span>
-            </button>
-          </>
-        )}
-
-        {ex.groupId && normalizedGroupType === 'circuit' && (
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                handleDissolveCircuit(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-red-400 hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Unlink className="w-3.5 h-3.5" />
-              <span>Sciogli Circuito</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                handleOpenCircuitSettings(day.id, ex.groupId!);
-                setActiveActionMenuExId(null);
-              }}
-              className="w-full px-3 py-2 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
-              <span>Impostazioni Circuito</span>
-            </button>
-          </>
-        )}
-
-        {/* Sposta su / giù */}
-        <button
-          type="button"
-          disabled={exIdx === 0}
-          onClick={() => {
-            handleMoveEx(day.id, ex.id, 'up');
-            setActiveActionMenuExId(null);
-          }}
-          className="w-full px-3 py-2 text-[11px] text-white/70 hover:text-white hover:bg-white/5 disabled:opacity-30 flex items-center gap-1.5 cursor-pointer"
-        >
-          <ArrowUp className="w-3.5 h-3.5" />
-          <span>Sposta su</span>
-        </button>
-        <button
-          type="button"
-          disabled={exIdx === day.esercizi.length - 1}
-          onClick={() => {
-            handleMoveEx(day.id, ex.id, 'down');
-            setActiveActionMenuExId(null);
-          }}
-          className="w-full px-3 py-2 text-[11px] text-white/70 hover:text-white hover:bg-white/5 disabled:opacity-30 flex items-center gap-1.5 cursor-pointer"
-        >
-          <ArrowDown className="w-3.5 h-3.5" />
-          <span>Sposta giù</span>
-        </button>
-
-        {/* Duplica */}
-        <button
-          type="button"
-          onClick={() => {
-            handleDuplicateEx(day.id, ex);
-            setActiveActionMenuExId(null);
-          }}
-          className="w-full px-3 py-2 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5 cursor-pointer"
-        >
-          <Copy className="w-3.5 h-3.5" />
-          <span>Duplica</span>
-        </button>
-
-        {/* Elimina */}
-        <button
-          type="button"
-          onClick={() => {
-            handleDeleteEx(day.id, ex.id);
-            setActiveActionMenuExId(null);
-          }}
-          className="w-full px-3 py-2 text-[11px] text-red-400 hover:bg-white/5 flex items-center gap-1.5 border-t border-white/5 mt-1 cursor-pointer"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-          <span>Rimuovi</span>
-        </button>
-      </div>
-    );
-  };
-
+  // Card-based rendering with grouped members
   if (workoutViewMode === 'cards') {
+    const cardGroupedBlocks = (() => {
+      const blocks: Array<{
+        type: 'single' | 'group';
+        groupId?: string;
+        normalizedGroupType?: ExerciseGroupType;
+        groupIndex?: number;
+        groupSummary?: any;
+        items: typeof processedExercises;
+      }> = [];
+
+      processedExercises.forEach((item) => {
+        if (!item.isInGroup || !item.groupId) {
+          blocks.push({
+            type: 'single',
+            items: [item]
+          });
+        } else {
+          const lastBlock = blocks[blocks.length - 1];
+          if (lastBlock && lastBlock.type === 'group' && lastBlock.groupId === item.groupId) {
+            lastBlock.items.push(item);
+          } else {
+            blocks.push({
+              type: 'group',
+              groupId: item.groupId,
+              normalizedGroupType: item.normalizedGroupType,
+              groupIndex: item.groupIndex,
+              groupSummary: item.groupSummary,
+              items: [item]
+            });
+          }
+        }
+      });
+
+      blocks.forEach(block => {
+        if (block.type === 'group') {
+          const leaderWithSummary = block.items.find(it => it.groupSummary);
+          if (leaderWithSummary) {
+            block.groupSummary = leaderWithSummary.groupSummary;
+          }
+        }
+      });
+
+      return blocks;
+    })();
+
     return (
       <div className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {processedExercises.map(({ ex, exIdx, isInGroup, groupId, normalizedGroupType, groupIndex, memberLabel, isGroupLeader, groupSummary }) => {
-            return (
-              <div 
-                key={ex.id}
-                className={`bg-neutral-900/40 border rounded-2xl p-4 space-y-4 relative flex flex-col justify-between transition-all duration-200 ${
-                  isInGroup ? 'border-[#CCFF00]/15 bg-[#CCFF00]/[0.01]' : 'border-white/5'
-                }`}
-                style={isInGroup ? { borderColor: `${config.primaryColor}25`, backgroundColor: `${config.primaryColor}03` } : {}}
-              >
-                {isInGroup && (
-                  <span className="absolute left-0 top-0 bottom-0 w-1 rounded-l-2xl" style={{ backgroundColor: config.primaryColor }} />
-                )}
-                
-                {/* Card Header */}
-                <div className="space-y-1 text-left">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-mono font-bold text-white/35">
-                      {isInGroup ? memberLabel : `#${exIdx + 1}`}
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      {isInGroup && (
-                        <span className="px-1.5 py-0.5 rounded text-[8px] font-mono font-black text-neutral-950 uppercase shrink-0" style={{ backgroundColor: config.primaryColor }}>
-                          {EXERCISE_GROUP_LABELS[normalizedGroupType!]}
-                        </span>
-                      )}
-                      {ex.linkVideo && (
-                        <a href={ex.linkVideo} target="_blank" rel="noreferrer" className="text-red-400 hover:text-red-300" aria-label={`Guarda video per ${ex.nome}`}>
-                          <Video className="w-3.5 h-3.5" />
-                        </a>
-                      )}
-                      <div className="relative">
-                        <button
-                          id={`trigger-actions-card-${ex.id}`}
-                          type="button"
-                          onClick={() => setActiveActionMenuExId(activeActionMenuExId === `ex_${ex.id}` ? null : `ex_${ex.id}`)}
-                          className="p-1 rounded hover:bg-white/5 text-white/40 hover:text-white cursor-pointer"
-                          aria-label="Menu azioni"
-                          aria-haspopup="true"
-                          aria-expanded={activeActionMenuExId === `ex_${ex.id}`}
-                        >
-                          <MoreHorizontal className="w-3.5 h-3.5" />
-                        </button>
-                        {activeActionMenuExId === `ex_${ex.id}` && renderActionMenuContent(ex, exIdx, isInGroup, normalizedGroupType)}
+          {cardGroupedBlocks.map((block) => {
+            if (block.type === 'single') {
+              const { ex, exIdx, isInGroup, normalizedGroupType } = block.items[0];
+              const selState = getExerciseGroupSelectionState(ex);
+
+              return (
+                <div 
+                  key={ex.id}
+                  className="bg-neutral-900/40 border border-white/5 rounded-2xl p-4 space-y-4 relative flex flex-col justify-between transition-all duration-200"
+                >
+                  {/* Card Header */}
+                  <div className="space-y-1 text-left">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-mono font-bold text-white/35">
+                        #{exIdx + 1}
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {ex.linkVideo && (
+                          <a href={ex.linkVideo} target="_blank" rel="noreferrer" className="text-red-400 hover:text-red-300" aria-label={`Guarda video per ${ex.nome}`}>
+                            <Video className="w-3.5 h-3.5" />
+                          </a>
+                        )}
+                        <div className="relative">
+                          <button
+                            id={`trigger-actions-card-${ex.id}`}
+                            type="button"
+                            onClick={(e) => handleOpenActionMenu(e, ex, exIdx, isInGroup, normalizedGroupType)}
+                            className="p-1 rounded hover:bg-white/5 text-white/40 hover:text-white cursor-pointer"
+                            aria-label="Menu azioni"
+                            aria-haspopup="true"
+                            aria-expanded={activeActionMenuExId === `ex_${ex.id}`}
+                          >
+                            <MoreHorizontal className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <h4 className="text-sm font-black text-white leading-tight break-words">{ex.nome}</h4>
-                  <span className="inline-block text-[10px] font-bold text-white/40 uppercase tracking-wider">{ex.distrettoMuscolare}</span>
-                  
-                  {groupSummary && (
-                    <div className="mt-2 p-2 rounded-lg bg-black/30 border border-[#CCFF00]/10 text-[9px] leading-relaxed">
-                      <span className="font-extrabold text-[#CCFF00] block mb-0.5" style={{ color: config.primaryColor }}>
-                        {normalizedGroupType === 'jumpset' 
-                          ? `${groupSummary.restBetween}s tra ${memberLabel} e ${getGroupMemberLabel(groupIndex, 2)} • ${groupSummary.restAfter}s dopo • ${groupSummary.rounds} ${groupSummary.rounds === 1 ? 'giro' : 'giri'}`
-                          : normalizedGroupType === 'circuit'
-                            ? `${groupSummary.restBetween}s tra le stazioni • ${groupSummary.restAfter}s dopo il giro • ${groupSummary.rounds} ${groupSummary.rounds === 1 ? 'giro' : 'giri'}`
-                            : `${groupSummary.restBetween}s tra esercizi • ${groupSummary.restAfter}s dopo • ${groupSummary.rounds} ${groupSummary.rounds === 1 ? 'giro' : 'giri'}`}
-                      </span>
-                      {normalizedGroupType === 'jumpset' && (
-                        <span className="text-white/35 italic block">Alterna {memberLabel} e {getGroupMemberLabel(groupIndex, 2)} rispettando il recupero.</span>
-                      )}
-                      {normalizedGroupType === 'circuit' && (
-                        <span className="text-white/35 italic block">Esegui le stazioni in sequenza.</span>
-                      )}
-                    </div>
-                  )}
-                </div>
 
-                {/* Card Main Inputs Grid */}
-                <div className="grid grid-cols-2 gap-2.5 text-left pt-2">
-                  <div className="bg-black/20 p-2 rounded-xl border border-white/5 flex flex-col justify-between">
-                    <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">Serie</span>
-                    <div className="flex items-center justify-between bg-black/40 border border-white/5 rounded-lg px-2 py-0.5 w-full select-none">
-                      <button
-                        type="button"
-                        onClick={() => handleUpdateExParam(day.id, ex.id, 'serie', Math.max(1, ex.serie - 1))}
-                        className="text-xs font-bold text-white/40 hover:text-white px-1 cursor-pointer"
-                        aria-label="Riduci serie"
-                      >
-                        -
-                      </button>
-                      <span className="text-xs font-black text-white font-mono">{ex.serie}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleUpdateExParam(day.id, ex.id, 'serie', ex.serie + 1)}
-                        className="text-xs font-bold text-white/40 hover:text-white px-1 cursor-pointer"
-                        aria-label="Aumenta serie"
-                      >
-                        +
-                      </button>
-                    </div>
+                    {/* Group Selection (Single card view checkbox) */}
+                    {groupSelectionDayId === day.id && (
+                      <div className="flex items-center gap-2 mb-2 pb-2 border-b border-white/5">
+                        <input
+                          type="checkbox"
+                          checked={selState.selected}
+                          disabled={selState.disabled}
+                          onChange={(e) => handleToggleExerciseSelection(ex.id, e.target.checked)}
+                          className="h-4 w-4 rounded border-white/20 bg-black text-[#CCFF00] focus:ring-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                          style={{ accentColor: config.primaryColor }}
+                          aria-label={`Seleziona ${ex.nome} per gruppo`}
+                        />
+                        <span className="text-[10px] text-white/50">Seleziona per gruppo</span>
+                      </div>
+                    )}
+
+                    <h4 className="text-sm font-black text-white leading-tight break-words">{ex.nome}</h4>
+                    <span className="inline-block text-[10px] font-bold text-white/40 uppercase tracking-wider">{ex.distrettoMuscolare}</span>
+                    {groupSelectionDayId === day.id && selState.disabled && selState.reason && (
+                      <p className="text-[10px] text-amber-400 font-medium leading-normal mt-1">
+                        {selState.reason}
+                      </p>
+                    )}
                   </div>
 
-                  <div className="bg-black/20 p-2 rounded-xl border border-white/5 flex flex-col justify-between">
-                    <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">Ripetizioni</span>
-                    <div className="flex items-center gap-1 bg-black/40 border border-white/5 rounded-lg px-1.5 py-0.5 w-full">
+                  {/* Card Main Inputs Grid */}
+                  <div className="grid grid-cols-2 gap-2.5 text-left pt-2">
+                    <div className="bg-black/20 p-2 rounded-xl border border-white/5 flex flex-col justify-between">
+                      <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">Serie</span>
+                      <div className="flex items-center justify-between bg-black/40 border border-white/5 rounded-lg px-2 py-0.5 w-full select-none">
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateExParam(day.id, ex.id, 'serie', Math.max(1, ex.serie - 1))}
+                          className="text-xs font-bold text-white/40 hover:text-white px-1 cursor-pointer"
+                          aria-label="Riduci serie"
+                        >
+                          -
+                        </button>
+                        <span className="text-xs font-black text-white font-mono">{ex.serie}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateExParam(day.id, ex.id, 'serie', ex.serie + 1)}
+                          className="text-xs font-bold text-white/40 hover:text-white px-1 cursor-pointer"
+                          aria-label="Aumenta serie"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="bg-black/20 p-2 rounded-xl border border-white/5 flex flex-col justify-between">
+                      <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">Ripetizioni</span>
+                      <div className="flex items-center gap-1 bg-black/40 border border-white/5 rounded-lg px-1.5 py-0.5 w-full">
+                        <input
+                          type="number"
+                          min="1"
+                          value={ex.repMin || ''}
+                          onChange={(e) => handleUpdateExParam(day.id, ex.id, 'repMin', Number(e.target.value))}
+                          className="w-full bg-transparent border-none text-center font-bold text-white text-xs focus:outline-none p-0"
+                          aria-label="Ripetizioni minime"
+                        />
+                        <span className="text-white/30 text-xs select-none">-</span>
+                        <input
+                          type="number"
+                          min="1"
+                          value={ex.repMax || ''}
+                          onChange={(e) => handleUpdateExParam(day.id, ex.id, 'repMax', Number(e.target.value))}
+                          className="w-full bg-transparent border-none text-center font-bold text-white text-xs focus:outline-none p-0"
+                          aria-label="Ripetizioni massime"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="bg-black/20 p-2 rounded-xl border border-white/5">
+                      <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">Carico</span>
                       <input
-                        type="number"
-                        min="1"
-                        value={ex.repMin || ''}
-                        onChange={(e) => handleUpdateExParam(day.id, ex.id, 'repMin', Number(e.target.value))}
-                        className="w-full bg-transparent border-none text-center font-bold text-white text-xs focus:outline-none p-0"
-                        aria-label="Ripetizioni minime"
-                      />
-                      <span className="text-white/30 text-xs select-none">-</span>
-                      <input
-                        type="number"
-                        min="1"
-                        value={ex.repMax || ''}
-                        onChange={(e) => handleUpdateExParam(day.id, ex.id, 'repMax', Number(e.target.value))}
-                        className="w-full bg-transparent border-none text-center font-bold text-white text-xs focus:outline-none p-0"
-                        aria-label="Ripetizioni massime"
+                        type="text"
+                        value={ex.caricoPrevisto || ''}
+                        onChange={(e) => handleUpdateExParam(day.id, ex.id, 'caricoPrevisto', e.target.value)}
+                        placeholder="—"
+                        className="w-full bg-black/40 border border-white/5 rounded-lg px-2 py-1 text-center text-xs font-bold text-white focus:outline-none focus:border-white/20"
+                        aria-label="Carico previsto"
                       />
                     </div>
-                  </div>
 
-                  <div className="bg-black/20 p-2 rounded-xl border border-white/5">
-                    <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">Carico</span>
-                    <input
-                      type="text"
-                      value={ex.caricoPrevisto || ''}
-                      onChange={(e) => handleUpdateExParam(day.id, ex.id, 'caricoPrevisto', e.target.value)}
-                      placeholder="—"
-                      className="w-full bg-black/40 border border-white/5 rounded-lg px-2 py-1 text-center text-xs font-bold text-white focus:outline-none focus:border-white/20"
-                      aria-label="Carico previsto"
-                    />
-                  </div>
-
-                  <div className="bg-black/20 p-2 rounded-xl border border-white/5">
-                    <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">RIR</span>
-                    <input
-                      type="number"
-                      min="0"
-                      max="10"
-                      value={ex.rir ?? ''}
-                      onChange={(e) => handleUpdateExParam(day.id, ex.id, 'rir', e.target.value !== '' ? Number(e.target.value) : undefined)}
-                      placeholder="—"
-                      className="w-full bg-black/40 border border-white/5 rounded-lg px-2 py-1 text-center text-xs font-mono text-white focus:outline-none focus:border-white/20"
-                      aria-label="Reps in reserve (RIR)"
-                    />
-                  </div>
-
-                  <div className="bg-black/20 p-2 rounded-xl border border-white/5">
-                    <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">T.U.T.</span>
-                    <input
-                      type="text"
-                      value={ex.tut || ''}
-                      onChange={(e) => handleUpdateExParam(day.id, ex.id, 'tut', e.target.value)}
-                      placeholder="—"
-                      className="w-full bg-black/40 border border-white/5 rounded-lg px-2 py-1 text-center text-xs font-mono text-white focus:outline-none focus:border-white/20"
-                      aria-label="Time under tension"
-                    />
-                  </div>
-
-                  <div className="bg-black/20 p-2 rounded-xl border border-white/5">
-                    <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">Recupero</span>
-                    <div className="flex items-center gap-1 bg-black/40 border border-white/5 rounded-lg px-2 py-1 w-full">
+                    <div className="bg-black/20 p-2 rounded-xl border border-white/5">
+                      <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">RIR</span>
                       <input
                         type="number"
                         min="0"
-                        step="15"
-                        value={ex.recupero ?? ''}
-                        onChange={(e) => handleUpdateExParam(day.id, ex.id, 'recupero', Number(e.target.value))}
+                        max="10"
+                        value={ex.rir ?? ''}
+                        onChange={(e) => handleUpdateExParam(day.id, ex.id, 'rir', e.target.value !== '' ? Number(e.target.value) : undefined)}
                         placeholder="—"
-                        className="w-full bg-transparent border-none text-center text-xs font-mono text-white focus:outline-none p-0"
-                        aria-label="Recupero"
+                        className="w-full bg-black/40 border border-white/5 rounded-lg px-2 py-1 text-center text-xs font-mono text-white focus:outline-none focus:border-white/20"
+                        aria-label="RIR"
                       />
-                      <span className="text-white/40 text-[9px] font-mono select-none">s</span>
+                    </div>
+
+                    <div className="bg-black/20 p-2 rounded-xl border border-white/5">
+                      <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">T.U.T.</span>
+                      <input
+                        type="text"
+                        value={ex.tut || ''}
+                        onChange={(e) => handleUpdateExParam(day.id, ex.id, 'tut', e.target.value)}
+                        placeholder="—"
+                        className="w-full bg-black/40 border border-white/5 rounded-lg px-2 py-1 text-center text-xs font-mono text-white focus:outline-none focus:border-white/20"
+                        aria-label="T.U.T."
+                      />
+                    </div>
+
+                    <div className="bg-black/20 p-2 rounded-xl border border-white/5">
+                      <span className="text-[8px] font-bold text-white/30 uppercase tracking-wider block mb-1">Recupero</span>
+                      <div className="flex items-center gap-1 bg-black/40 border border-white/5 rounded-lg px-2 py-1 w-full">
+                        <input
+                          type="number"
+                          min="0"
+                          step="15"
+                          value={ex.recupero ?? ''}
+                          onChange={(e) => handleUpdateExParam(day.id, ex.id, 'recupero', Number(e.target.value))}
+                          placeholder="—"
+                          className="w-full bg-transparent border-none text-center text-xs font-mono text-white focus:outline-none p-0"
+                          aria-label="Recupero"
+                        />
+                        <span className="text-white/40 text-[9px] font-mono select-none">s</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Quick actions row */}
+                  <div className="flex items-center justify-between gap-2 pt-3 border-t border-white/5 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenBlocksManager(day.id, ex.id)}
+                      className="flex items-center gap-1 px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-[9px] font-bold text-white/60 hover:text-white transition-all cursor-pointer border border-white/5 shrink-0"
+                      aria-label="Gestisci blocchi dell'esercizio"
+                    >
+                      <Layers className="w-2.5 h-2.5 text-[#CCFF00]" style={{ color: config.primaryColor }} />
+                      <span>{ex.blocks && ex.blocks.length > 0 ? `Blocchi (${ex.blocks.length})` : 'Blocchi'}</span>
+                    </button>
+
+                    <div className="flex gap-1 shrink-0">
+                      <div className="p-1 px-1.5 rounded bg-black/30 text-white border border-white/5 text-[9px] font-bold flex items-center gap-1">
+                        <span className="text-white/30 font-bold uppercase">Tecnica:</span>
+                        {renderTecnicaSelect(ex, false)}
+                      </div>
+                      <button
+                        id={`trigger-notes-card-${ex.id}`}
+                        type="button"
+                        onClick={() => openNotesModal(ex.id, ex.noteTecniche || '', `trigger-notes-card-${ex.id}`)}
+                        title={`Note: ${ex.noteTecniche || '—'}`}
+                        className="p-1 px-1.5 rounded bg-black/30 hover:bg-white/5 text-white/40 hover:text-[#CCFF00] border border-white/5 text-[9px] font-bold flex items-center gap-1 cursor-pointer"
+                        aria-label="Modifica note"
+                      >
+                        <FileText className="w-2.5 h-2.5" />
+                        <span>Note</span>
+                      </button>
                     </div>
                   </div>
                 </div>
+              );
+            } else {
+              // Group Block Container Card
+              return (
+                <div 
+                  key={`group-card-${block.groupId}`}
+                  className="bg-neutral-900/40 border border-[#CCFF00]/30 bg-[#CCFF00]/[0.02] rounded-2xl p-4 space-y-4 relative flex flex-col justify-between transition-all duration-200"
+                  style={{ borderColor: `${config.primaryColor}40`, backgroundColor: `${config.primaryColor}05` }}
+                >
+                  <span className="absolute left-0 top-0 bottom-0 w-1.5 rounded-l-2xl" style={{ backgroundColor: config.primaryColor }} />
 
-                {/* Quick actions row */}
-                <div className="flex items-center justify-between gap-2 pt-3 border-t border-white/5 mt-2">
-                  {/* Blocks Manager Trigger */}
-                  <button
-                    type="button"
-                    onClick={() => handleOpenBlocksManager(day.id, ex.id)}
-                    className="flex items-center gap-1 px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-[9px] font-bold text-white/60 hover:text-white transition-all cursor-pointer border border-white/5 shrink-0"
-                    aria-label="Gestisci blocchi dell'esercizio"
-                  >
-                    <Layers className="w-2.5 h-2.5 text-[#CCFF00]" style={{ color: config.primaryColor }} />
-                    <span>{ex.blocks && ex.blocks.length > 0 ? `Blocchi (${ex.blocks.length})` : 'Blocchi'}</span>
-                  </button>
+                  {/* Group Header */}
+                  <div className="flex items-center justify-between border-b border-white/10 pb-2 text-left">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-black text-neutral-950 uppercase" style={{ backgroundColor: config.primaryColor }}>
+                        {EXERCISE_GROUP_LABELS[block.normalizedGroupType!]}
+                      </span>
+                      <span className="text-xs font-black text-white uppercase tracking-wider">
+                        Gruppo {block.groupIndex !== undefined ? String.fromCharCode(65 + block.groupIndex) : ''}
+                      </span>
+                    </div>
+                  </div>
 
-                  {/* Quick text fields edit */}
-                  <div className="flex gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setTextEditModal({
-                        exId: ex.id,
-                        field: 'tecnicaIntensita',
-                        title: 'Modifica Tecnica di Intensità',
-                        value: ex.tecnicaIntensita || ''
-                      })}
-                      title={`Tecnica: ${ex.tecnicaIntensita || 'Standard'}`}
-                      className="p-1 px-1.5 rounded bg-black/30 hover:bg-white/5 text-white/40 hover:text-[#CCFF00] border border-white/5 text-[9px] font-bold flex items-center gap-1 cursor-pointer"
-                    >
-                      <Settings className="w-2.5 h-2.5" />
-                      <span className="max-w-[45px] truncate">{ex.tecnicaIntensita || 'Tecnica'}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTextEditModal({
-                        exId: ex.id,
-                        field: 'noteTecniche',
-                        title: 'Modifica Note Tecniche',
-                        value: ex.noteTecniche || ''
-                      })}
-                      title={`Note: ${ex.noteTecniche || '—'}`}
-                      className="p-1 px-1.5 rounded bg-black/30 hover:bg-white/5 text-white/40 hover:text-[#CCFF00] border border-white/5 text-[9px] font-bold flex items-center gap-1 cursor-pointer"
-                    >
-                      <FileText className="w-2.5 h-2.5" />
-                      <span>Note</span>
-                    </button>
+                  {/* Group Summary Info */}
+                  {block.groupSummary && (
+                    <div className="p-2.5 rounded-xl bg-neutral-950 border border-white/5 text-[10px] space-y-1 leading-normal text-left">
+                      <div className="font-bold" style={{ color: config.primaryColor }}>
+                        {block.normalizedGroupType === 'jumpset' 
+                          ? `${block.groupSummary.restBetween}s tra A1 e A2 • ${block.groupSummary.restAfter}s dopo • ${block.groupSummary.rounds} ${block.groupSummary.rounds === 1 ? 'giro' : 'giri'}`
+                          : block.normalizedGroupType === 'circuit'
+                            ? `${block.groupSummary.restBetween}s tra le stazioni • ${block.groupSummary.restAfter}s dopo il giro • ${block.groupSummary.rounds} ${block.groupSummary.rounds === 1 ? 'giro' : 'giri'}`
+                            : `${block.groupSummary.restBetween}s tra esercizi • ${block.groupSummary.restAfter}s dopo • ${block.groupSummary.rounds} ${block.groupSummary.rounds === 1 ? 'giro' : 'giri'}`}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Individual Exercises inside Group Card */}
+                  <div className="space-y-4">
+                    {block.items.map(({ ex, exIdx, isInGroup, groupId, normalizedGroupType, groupIndex, memberLabel }) => {
+                      const selState = getExerciseGroupSelectionState(ex);
+                      return (
+                        <div key={ex.id} className="bg-black/30 p-3 rounded-xl border border-white/5 space-y-3 relative text-left">
+                          
+                          {/* Selection Checkbox inside Group Card */}
+                          {groupSelectionDayId === day.id && (
+                            <div className="flex items-center gap-2 mb-2 pb-2 border-b border-white/5">
+                              <input
+                                type="checkbox"
+                                checked={selState.selected}
+                                disabled={selState.disabled}
+                                onChange={(e) => handleToggleExerciseSelection(ex.id, e.target.checked)}
+                                className="h-4 w-4 rounded border-white/20 bg-black text-[#CCFF00] focus:ring-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                style={{ accentColor: config.primaryColor }}
+                                aria-label={`Seleziona ${ex.nome} per gruppo`}
+                              />
+                              <span className="text-[10px] text-white/50">Seleziona per gruppo</span>
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-mono font-bold text-white/50">
+                              {memberLabel}
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              {ex.linkVideo && (
+                                <a href={ex.linkVideo} target="_blank" rel="noreferrer" className="text-red-400 hover:text-red-300" aria-label={`Guarda video per ${ex.nome}`}>
+                                  <Video className="w-3.5 h-3.5" />
+                                </a>
+                              )}
+                              <div className="relative">
+                                <button
+                                  id={`trigger-actions-card-${ex.id}`}
+                                  type="button"
+                                  onClick={(e) => handleOpenActionMenu(e, ex, exIdx, isInGroup, normalizedGroupType)}
+                                  className="p-1 rounded hover:bg-white/5 text-white/40 hover:text-white cursor-pointer"
+                                  aria-label="Menu azioni"
+                                  aria-haspopup="true"
+                                  aria-expanded={activeActionMenuExId === `ex_${ex.id}`}
+                                >
+                                  <MoreHorizontal className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Name and validation reason */}
+                          <div className="space-y-1">
+                            <h4 className="text-xs font-bold text-white leading-tight break-words">{ex.nome}</h4>
+                            <span className="inline-block text-[9px] font-bold text-white/30 uppercase tracking-wider">{ex.distrettoMuscolare}</span>
+                            {groupSelectionDayId === day.id && selState.disabled && selState.reason && (
+                              <p className="text-[10px] text-amber-400 font-medium leading-normal mt-1">
+                                {selState.reason}
+                              </p>
+                            )}
+                          </div>
+
+                          {/* Grid layout inside grouped item card */}
+                          <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div className="bg-neutral-950/40 p-2 rounded-lg border border-white/5 flex flex-col justify-between">
+                              <span className="text-[8px] font-bold text-white/35 uppercase tracking-wider mb-1">Serie</span>
+                              <input
+                                type="number"
+                                min="1"
+                                value={ex.serie}
+                                onChange={(e) => handleUpdateExParam(day.id, ex.id, 'serie', Number(e.target.value))}
+                                className="w-full bg-transparent border-b border-white/10 text-white font-semibold text-center focus:outline-none"
+                              />
+                            </div>
+                            <div className="bg-neutral-950/40 p-2 rounded-lg border border-white/5 flex flex-col justify-between">
+                              <span className="text-[8px] font-bold text-white/35 uppercase tracking-wider mb-1">Ripetizioni</span>
+                              <div className="flex gap-1">
+                                <input
+                                  type="number"
+                                  min="1"
+                                  placeholder="Min"
+                                  value={ex.repMin || ''}
+                                  onChange={(e) => handleUpdateExParam(day.id, ex.id, 'repMin', Number(e.target.value))}
+                                  className="w-1/2 bg-transparent border-b border-white/10 text-white text-center focus:outline-none font-mono"
+                                />
+                                <input
+                                  type="number"
+                                  min="1"
+                                  placeholder="Max"
+                                  value={ex.repMax || ''}
+                                  onChange={(e) => handleUpdateExParam(day.id, ex.id, 'repMax', Number(e.target.value))}
+                                  className="w-1/2 bg-transparent border-b border-white/10 text-white text-center focus:outline-none font-mono"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div className="bg-neutral-950/40 p-2 rounded-lg border border-white/5 flex flex-col justify-between">
+                              <span className="text-[8px] font-bold text-white/35 uppercase tracking-wider mb-1">Carico</span>
+                              <input
+                                type="text"
+                                value={ex.caricoPrevisto || ''}
+                                onChange={(e) => handleUpdateExParam(day.id, ex.id, 'caricoPrevisto', e.target.value)}
+                                placeholder="—"
+                                className="w-full bg-transparent border-b border-white/10 text-white font-semibold text-center focus:outline-none"
+                              />
+                            </div>
+                            <div className="bg-neutral-950/40 p-2 rounded-lg border border-white/5 flex flex-col justify-between">
+                              <span className="text-[8px] font-bold text-white/35 uppercase tracking-wider mb-1">RIR</span>
+                              <input
+                                type="number"
+                                min="0"
+                                max="10"
+                                value={ex.rir ?? ''}
+                                onChange={(e) => handleUpdateExParam(day.id, ex.id, 'rir', e.target.value !== '' ? Number(e.target.value) : undefined)}
+                                placeholder="—"
+                                className="w-full bg-transparent border-b border-white/10 text-white text-center focus:outline-none font-mono"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div className="bg-neutral-950/40 p-2 rounded-lg border border-white/5 flex flex-col justify-between">
+                              <span className="text-[8px] font-bold text-white/35 uppercase tracking-wider mb-1">T.U.T.</span>
+                              <input
+                                type="text"
+                                value={ex.tut || ''}
+                                onChange={(e) => handleUpdateExParam(day.id, ex.id, 'tut', e.target.value)}
+                                placeholder="—"
+                                className="w-full bg-transparent border-b border-white/10 text-white text-center focus:outline-none font-mono"
+                              />
+                            </div>
+                            <div className="bg-neutral-950/40 p-2 rounded-lg border border-white/5 flex flex-col justify-between">
+                              <span className="text-[8px] font-bold text-white/35 uppercase tracking-wider mb-1">Recupero</span>
+                              <div className="flex items-center justify-center gap-0.5">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="15"
+                                  value={ex.recupero ?? ''}
+                                  onChange={(e) => handleUpdateExParam(day.id, ex.id, 'recupero', Number(e.target.value))}
+                                  placeholder="—"
+                                  className="w-full bg-transparent border-b border-white/10 text-white text-center focus:outline-none font-mono"
+                                />
+                                <span className="text-white/40 text-[9px] font-mono">s</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Extras */}
+                          <div className="flex gap-2">
+                            <div className="flex flex-col gap-1 bg-black/20 p-2 rounded-lg border border-white/5 w-1/2 text-left">
+                              <span className="text-[8px] font-bold text-white/35 uppercase tracking-wider">Tecnica:</span>
+                              {renderTecnicaSelect(ex, false)}
+                            </div>
+                            <div className="flex flex-col justify-between bg-black/20 p-2 rounded-lg border border-white/5 w-1/2 text-left">
+                              <span className="text-[8px] font-bold text-white/35 uppercase tracking-wider mb-0.5">Note:</span>
+                              <div className="flex items-center justify-between gap-1 mt-auto">
+                                <span className="text-white/50 text-[10px] truncate max-w-[50px]" title={ex.noteTecniche || '—'}>
+                                  {ex.noteTecniche || '—'}
+                                </span>
+                                <button
+                                  id={`trigger-notes-card-${ex.id}`}
+                                  type="button"
+                                  onClick={() => openNotesModal(ex.id, ex.noteTecniche || '', `trigger-notes-card-${ex.id}`)}
+                                  className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#CCFF00] shrink-0"
+                                  aria-label="Modifica note"
+                                >
+                                  <FileText className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
-              </div>
-            );
+              );
+            }
           })}
         </div>
 
-        {/* Note/Technique Modal */}
+        {/* Notes Edit Modal */}
         {textEditModal && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="modal-title">
             <div className="bg-[#121212] border border-white/10 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl animate-fadeIn">
               <div className="p-4 border-b border-white/5 flex justify-between items-center bg-black/20">
-                <span className="text-xs font-black uppercase text-white/80 tracking-wider">
+                <span id="modal-title" className="text-xs font-black uppercase text-white/80 tracking-wider">
                   {textEditModal.title}
                 </span>
                 <button
                   type="button"
                   onClick={() => setTextEditModal(null)}
                   className="p-1.5 rounded-lg bg-black/40 border border-white/5 text-white/40 hover:text-white hover:bg-neutral-900 transition-all cursor-pointer"
+                  aria-label="Chiudi modale note"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -668,7 +978,7 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
                       handleUpdateExParam(
                         day.id,
                         textEditModal.exId,
-                        textEditModal.field,
+                        'noteTecniche',
                         textEditModal.value
                       );
                       setTextEditModal(null);
@@ -962,7 +1272,7 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
                     <button
                       id={`trigger-actions-table-${ex.id}`}
                       type="button"
-                      onClick={() => setActiveActionMenuExId(activeActionMenuExId === `ex_${ex.id}` ? null : `ex_${ex.id}`)}
+                      onClick={(e) => handleOpenActionMenu(e, ex, exIdx, isInGroup, normalizedGroupType)}
                       className="p-1 rounded hover:bg-white/5 text-white/40 hover:text-white cursor-pointer"
                       aria-label="Menu azioni"
                       aria-haspopup="true"
@@ -970,7 +1280,6 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
                     >
                       <MoreHorizontal className="w-4 h-4" />
                     </button>
-                    {activeActionMenuExId === `ex_${ex.id}` && renderActionMenuContent(ex, exIdx, isInGroup, normalizedGroupType)}
                   </td>
                 </tr>
               );
@@ -994,6 +1303,7 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
       <div className="block sm:hidden space-y-3">
         {processedExercises.map(({ ex, exIdx, isInGroup, groupId, normalizedGroupType, groupIndex, memberLabel, isGroupLeader, groupSummary }) => {
           const isExpanded = !!expandedExIds[ex.id];
+          const selState = getExerciseGroupSelectionState(ex);
           return (
             <div 
               key={ex.id}
@@ -1005,6 +1315,19 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
               
               {/* Closed row layout */}
               <div className="flex justify-between items-start gap-2">
+                {groupSelectionDayId === day.id && (
+                  <div className="pt-1 shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={selState.selected}
+                      disabled={selState.disabled}
+                      onChange={(e) => handleToggleExerciseSelection(ex.id, e.target.checked)}
+                      className="h-4 w-4 rounded border-white/20 bg-black text-[#CCFF00] focus:ring-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      style={{ accentColor: config.primaryColor }}
+                      aria-label={`Seleziona ${ex.nome} per gruppo`}
+                    />
+                  </div>
+                )}
                 <div className="flex-1 space-y-1">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-[10px] font-mono font-bold text-white/40 select-none">
@@ -1017,6 +1340,11 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
                     )}
                   </div>
                   <h4 className="text-xs font-bold text-white break-words pr-4 leading-tight">{ex.nome}</h4>
+                  {groupSelectionDayId === day.id && selState.disabled && selState.reason && (
+                    <p className="text-[9px] text-amber-400 font-medium leading-tight mt-0.5">
+                      {selState.reason}
+                    </p>
+                  )}
                   <div className="flex items-center gap-3 text-[10px] font-mono text-white/60">
                     <span>Serie: <strong>{ex.serie}</strong></span>
                     <span>Reps: <strong>{ex.repMin}{ex.repMax !== ex.repMin ? `–${ex.repMax}` : ''}</strong></span>
@@ -1029,7 +1357,7 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
                     <button
                       id={`trigger-actions-mobile-${ex.id}`}
                       type="button"
-                      onClick={() => setActiveActionMenuExId(activeActionMenuExId === `ex_${ex.id}` ? null : `ex_${ex.id}`)}
+                      onClick={(e) => handleOpenActionMenu(e, ex, exIdx, isInGroup, normalizedGroupType)}
                       className="p-1 rounded hover:bg-white/5 text-white/40 hover:text-white cursor-pointer"
                       aria-label="Menu azioni"
                       aria-haspopup="true"
@@ -1037,7 +1365,6 @@ export const WorkoutExercisesList: React.FC<WorkoutExercisesListProps> = ({
                     >
                       <MoreHorizontal className="w-3.5 h-3.5" />
                     </button>
-                    {activeActionMenuExId === `ex_${ex.id}` && renderActionMenuContent(ex, exIdx, isInGroup, normalizedGroupType)}
                   </div>
                   <button
                     type="button"
