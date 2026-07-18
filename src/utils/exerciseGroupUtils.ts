@@ -9,6 +9,7 @@ import { WorkoutExercise, ExerciseGroupType } from '../types';
 export const DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC = 0;
 export const DEFAULT_GROUP_REST_AFTER_ROUND_SEC = 90;
 export const DEFAULT_GROUP_ROUNDS = 1;
+export const DEFAULT_JUMPSET_REST_BETWEEN_EXERCISES_SEC = 60;
 
 // 1. TIPI DI GRUPPO VALIDI
 export const VALID_EXERCISE_GROUP_TYPES: ExerciseGroupType[] = [
@@ -58,11 +59,15 @@ export function normalizeExerciseGroupData(exercise: WorkoutExercise): WorkoutEx
   const groupType = normalizeExerciseGroupType(exercise.groupType);
   const hasGroup = !!(exercise.groupId && exercise.groupId.trim() !== '' && groupType);
 
+  const defaultRestBetween = groupType === 'jumpset'
+    ? DEFAULT_JUMPSET_REST_BETWEEN_EXERCISES_SEC
+    : DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC;
+
   return {
     ...exercise,
     groupType,
     groupRestBetweenExercisesSec: hasGroup 
-      ? (exercise.groupRestBetweenExercisesSec ?? DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC) 
+      ? (exercise.groupRestBetweenExercisesSec ?? defaultRestBetween) 
       : exercise.groupRestBetweenExercisesSec,
     groupRestAfterRoundSec: hasGroup 
       ? (exercise.groupRestAfterRoundSec ?? exercise.groupRest ?? DEFAULT_GROUP_REST_AFTER_ROUND_SEC) 
@@ -204,16 +209,24 @@ export function validateExerciseGroup(
     // Dimensioni minime/esatte
     if (normalizedType === 'superset' && count < 2) {
       errors.push('Un superset deve contenere almeno 2 esercizi.');
-    } else if (normalizedType === 'compound_set' && count < 2) {
-      errors.push('Un compound set deve contenere almeno 2 esercizi.');
-    } else if (normalizedType === 'jumpset' && count < 2) {
-      errors.push('Un jumpset deve contenere almeno 2 esercizi.');
+    } else if (normalizedType === 'compound_set' && count !== 2) {
+      errors.push('Un compound set deve contenere esattamente 2 esercizi.');
+    } else if (normalizedType === 'compound_set' && count === 2) {
+      if (members[0].distrettoMuscolare !== members[1].distrettoMuscolare) {
+        errors.push('Un compound set richiede esercizi dello stesso distretto muscolare.');
+      }
+    } else if (normalizedType === 'jumpset' && count !== 2) {
+      errors.push('Un jumpset deve contenere esattamente 2 esercizi.');
+    } else if (normalizedType === 'jumpset' && count === 2) {
+      if (members[0].distrettoMuscolare === members[1].distrettoMuscolare) {
+        errors.push('Un jumpset richiede esercizi di distretti muscolari differenti.');
+      }
     } else if (normalizedType === 'triset' && count !== 3) {
       errors.push('Un triset deve contenere esattamente 3 esercizi.');
     } else if (normalizedType === 'giant_set' && count < 4) {
       errors.push('Un giant set deve contenere almeno 4 esercizi.');
-    } else if (normalizedType === 'circuit' && count < 2) {
-      errors.push('Un circuito deve contenere almeno 2 esercizi.');
+    } else if (normalizedType === 'circuit' && count < 4) {
+      errors.push('Un circuito deve contenere almeno 4 esercizi.');
     }
   }
 

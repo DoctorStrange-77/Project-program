@@ -6,7 +6,7 @@
 import React from 'react';
 import { CoachConfig, Client, WorkoutPlan, Exercise } from '../types';
 import { 
-  Users, FileText, Dumbbell, UserPlus, FilePlus, Search, Trophy, Calendar, 
+  Users, FileText, Dumbbell, UserPlus, FilePlus, Search, Trophy, 
   RotateCcw, History, ClipboardList, CheckCircle2
 } from 'lucide-react';
 
@@ -72,18 +72,29 @@ export default function Dashboard({
               <Trophy className="w-4 h-4" style={{ color: config.primaryColor }} />
               <span>{config.teamName || 'Coach Board'}</span>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-black uppercase tracking-tighter italic text-white">
-              Bentornato, Coach <span style={{ color: config.primaryColor }}>{config.nomeCoach}</span>
+            <h1 className="text-2xl sm:text-3xl font-black uppercase tracking-tighter italic text-white leading-tight">
+              Bentornato, Coach <br />
+              <span style={{ color: config.primaryColor }}>{config.nomeCoach}</span>
             </h1>
             {config.slogan && (
               <p className="text-white/60 italic text-xs font-semibold">"{config.slogan}"</p>
             )}
           </div>
           
-          <div className="flex items-center gap-3 bg-black/40 px-4 py-2 rounded-xl border border-white/5 text-[10px] uppercase tracking-wider text-white/40 font-mono">
-            <Calendar className="w-4 h-4" style={{ color: config.primaryColor }} />
-            <span>{new Date().toLocaleDateString('it-IT', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</span>
-          </div>
+          {(() => {
+            const now = new Date();
+            const weekday = now.toLocaleDateString('it-IT', { weekday: 'long' }).toUpperCase();
+            const dayNum = now.getDate();
+            const month = now.toLocaleDateString('it-IT', { month: 'long' }).toUpperCase();
+            const year = now.getFullYear();
+            return (
+              <div className="text-right flex flex-col items-end font-mono text-xs sm:text-sm tracking-wider uppercase leading-none shrink-0 self-end sm:self-center">
+                <div className="font-black text-white/50 text-[11px] sm:text-xs">{weekday} {dayNum}</div>
+                <div className="font-bold text-white/40 text-[10px] sm:text-[11px] mt-0.5">{month}</div>
+                <div className="font-semibold text-white/30 text-[9px] sm:text-[10px] mt-0.5">{year}</div>
+              </div>
+            );
+          })()}
         </div>
       </div>
 

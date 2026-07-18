@@ -7,7 +7,8 @@ import React, { useState, useEffect } from 'react';
 import { 
   Client, CoachConfig, Exercise, WorkoutPlan, WorkoutDay, 
   WorkoutExercise, Sesso, LivelloEsperienza, DistrettoMuscolare, 
-  WorkoutTemplate, WorkoutWeek, WorkoutPlanStatus, WorkoutExerciseBlock 
+  WorkoutTemplate, WorkoutWeek, WorkoutPlanStatus, WorkoutExerciseBlock,
+  ExerciseGroupType, EXERCISE_GROUP_LABELS
 } from '../types';
 import { 
   User, Check, ChevronRight, ChevronLeft, Trash2, Copy, ArrowUp, ArrowDown, 
@@ -29,7 +30,8 @@ import {
   normalizeExerciseGroupData,
   DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC,
   DEFAULT_GROUP_REST_AFTER_ROUND_SEC,
-  DEFAULT_GROUP_ROUNDS
+  DEFAULT_GROUP_ROUNDS,
+  DEFAULT_JUMPSET_REST_BETWEEN_EXERCISES_SEC
 } from '../utils/exerciseGroupUtils';
 
 const DISTRICT_COLORS: { [key: string]: string } = {
@@ -271,13 +273,41 @@ export default function WorkoutWizard({
   const [weeks, setWeeks] = useState<WorkoutWeek[]>([]);
   const [activeWeekIndex, setActiveWeekIndex] = useState<number>(1); // 1-indexed
 
-  // Superset selection state
-  const [supersetSelectionDayId, setSupersetSelectionDayId] = useState<string | null>(null);
+  // Group selection states
+  const [groupSelectionDayId, setGroupSelectionDayId] = useState<string | null>(null);
+  const [groupSelectionType, setGroupSelectionType] = useState<ExerciseGroupType | null>(null);
   const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>([]);
+  const [activeGroupMenuDayId, setActiveGroupMenuDayId] = useState<string | null>(null);
+  const [supersetSettingsGroupType, setSupersetSettingsGroupType] = useState<ExerciseGroupType>('superset');
+
+  // Helper utility for required exercise count per group type
+  const getRequiredGroupMemberCount = (type: ExerciseGroupType | null): number => {
+    if (type === 'superset') return 2;
+    if (type === 'compound_set') return 2;
+    if (type === 'jumpset') return 2;
+    if (type === 'triset') return 3;
+    if (type === 'giant_set') return 4;
+    if (type === 'circuit') return 4;
+    return 0;
+  };
+
+  const resetGroupSelection = () => {
+    setGroupSelectionDayId(null);
+    setGroupSelectionType(null);
+    setSelectedExerciseIds([]);
+    setActiveGroupMenuDayId(null);
+  };
 
   useEffect(() => {
-    setSupersetSelectionDayId(null);
-    setSelectedExerciseIds([]);
+    resetGroupSelection();
+    setSupersetSettingsModalOpen(false);
+    setSupersetSettingsGroupId(null);
+    setSupersetSettingsDayId(null);
+    setSupersetSettingsHasMismatch(false);
+    setTempRestBetweenSec(0);
+    setTempRestAfterSec(90);
+    setTempRounds(1);
+    setValidationErrors({});
   }, [activeWeekIndex]);
 
   // Superset settings modal state
@@ -1393,9 +1423,11 @@ export default function WorkoutWizard({
     }));
   };
 
-  // Remove exercise from its group
-  const handleConfirmSuperset = (dayId: string) => {
-    if (selectedExerciseIds.length !== 2) return;
+  // Confirm and create exercise group (Superset or Triset or Compound Set)
+  const handleConfirmExerciseGroup = (dayId: string) => {
+    if (!groupSelectionType) return;
+    const requiredCount = getRequiredGroupMemberCount(groupSelectionType);
+    if (selectedExerciseIds.length !== requiredCount) return;
 
     const day = giornate.find(d => d.id === dayId);
     if (!day) return;
@@ -1406,10 +1438,39 @@ export default function WorkoutWizard({
       .filter(item => selectedExerciseIds.includes(item.ex.id))
       .sort((a, b) => a.idx - b.idx);
 
-    if (selectedIndexes.length !== 2) return;
+    if (selectedIndexes.length !== requiredCount) return;
 
-    const firstItem = selectedIndexes[0];
-    const secondItem = selectedIndexes[1];
+    // Specific validation for Compound Set
+    if (groupSelectionType === 'compound_set') {
+      const firstEx = selectedIndexes[0].ex;
+      const secondEx = selectedIndexes[1].ex;
+
+      const isFirstGrouped = !!(firstEx.groupId && normalizeExerciseGroupType(firstEx.groupType));
+      const isSecondGrouped = !!(secondEx.groupId && normalizeExerciseGroupType(secondEx.groupType));
+
+      if (firstEx.distrettoMuscolare !== secondEx.distrettoMuscolare || isFirstGrouped || isSecondGrouped) {
+        if (onShowToast) {
+          onShowToast('Seleziona due esercizi dello stesso distretto muscolare.', 'error');
+        }
+        return;
+      }
+    }
+
+    // Specific validation for Jumpset
+    if (groupSelectionType === 'jumpset') {
+      const firstEx = selectedIndexes[0].ex;
+      const secondEx = selectedIndexes[1].ex;
+
+      const isFirstGrouped = !!(firstEx.groupId && normalizeExerciseGroupType(firstEx.groupType));
+      const isSecondGrouped = !!(secondEx.groupId && normalizeExerciseGroupType(secondEx.groupType));
+
+      if (firstEx.distrettoMuscolare === secondEx.distrettoMuscolare || isFirstGrouped || isSecondGrouped) {
+        if (onShowToast) {
+          onShowToast('Seleziona due esercizi appartenenti a distretti muscolari differenti.', 'error');
+        }
+        return;
+      }
+    }
 
     const newGroupId = createExerciseGroupId();
 
@@ -1418,24 +1479,18 @@ export default function WorkoutWizard({
         return {
           ...d,
           esercizi: d.esercizi.map((ex) => {
-            if (ex.id === firstItem.ex.id) {
+            const indexInSelected = selectedIndexes.findIndex(item => item.ex.id === ex.id);
+            if (indexInSelected !== -1) {
+              const restBetween = groupSelectionType === 'jumpset'
+                ? DEFAULT_JUMPSET_REST_BETWEEN_EXERCISES_SEC
+                : DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC;
+
               return {
                 ...ex,
                 groupId: newGroupId,
-                groupType: 'superset',
-                groupOrder: 1,
-                groupRestBetweenExercisesSec: DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC,
-                groupRestAfterRoundSec: DEFAULT_GROUP_REST_AFTER_ROUND_SEC,
-                groupRounds: DEFAULT_GROUP_ROUNDS
-              };
-            }
-            if (ex.id === secondItem.ex.id) {
-              return {
-                ...ex,
-                groupId: newGroupId,
-                groupType: 'superset',
-                groupOrder: 2,
-                groupRestBetweenExercisesSec: DEFAULT_GROUP_REST_BETWEEN_EXERCISES_SEC,
+                groupType: groupSelectionType,
+                groupOrder: indexInSelected + 1,
+                groupRestBetweenExercisesSec: restBetween,
                 groupRestAfterRoundSec: DEFAULT_GROUP_REST_AFTER_ROUND_SEC,
                 groupRounds: DEFAULT_GROUP_ROUNDS
               };
@@ -1447,10 +1502,10 @@ export default function WorkoutWizard({
       return d;
     }));
 
-    setSupersetSelectionDayId(null);
-    setSelectedExerciseIds([]);
+    const label = EXERCISE_GROUP_LABELS[groupSelectionType] || 'Gruppo';
+    resetGroupSelection();
     if (onShowToast) {
-      onShowToast('Superset creato con successo!', 'success');
+      onShowToast(`${label} creato con successo.`, 'success');
     }
   };
 
@@ -1474,6 +1529,106 @@ export default function WorkoutWizard({
     }
   };
 
+  const handleDissolveTriset = (dayId: string, groupId: string) => {
+    setGiornate(prev => prev.map(d => {
+      if (d.id === dayId) {
+        return {
+          ...d,
+          esercizi: d.esercizi.map(ex => {
+            if (ex.groupId === groupId && normalizeExerciseGroupType(ex.groupType) === 'triset') {
+              return removeExerciseFromGroup(ex);
+            }
+            return ex;
+          })
+        };
+      }
+      return d;
+    }));
+    if (onShowToast) {
+      onShowToast('Triset rimosso.', 'success');
+    }
+  };
+
+  const handleDissolveCompoundSet = (dayId: string, groupId: string) => {
+    setGiornate(prev => prev.map(d => {
+      if (d.id === dayId) {
+        return {
+          ...d,
+          esercizi: d.esercizi.map(ex => {
+            if (ex.groupId === groupId && normalizeExerciseGroupType(ex.groupType) === 'compound_set') {
+              return removeExerciseFromGroup(ex);
+            }
+            return ex;
+          })
+        };
+      }
+      return d;
+    }));
+    if (onShowToast) {
+      onShowToast('Compound Set rimosso.', 'success');
+    }
+  };
+
+  const handleDissolveGiantSet = (dayId: string, groupId: string) => {
+    setGiornate(prev => prev.map(d => {
+      if (d.id === dayId) {
+        return {
+          ...d,
+          esercizi: d.esercizi.map(ex => {
+            if (ex.groupId === groupId && normalizeExerciseGroupType(ex.groupType) === 'giant_set') {
+              return removeExerciseFromGroup(ex);
+            }
+            return ex;
+          })
+        };
+      }
+      return d;
+    }));
+    if (onShowToast) {
+      onShowToast('Giant Set rimosso.', 'success');
+    }
+  };
+
+  const handleDissolveJumpset = (dayId: string, groupId: string) => {
+    setGiornate(prev => prev.map(d => {
+      if (d.id === dayId) {
+        return {
+          ...d,
+          esercizi: d.esercizi.map(ex => {
+            if (ex.groupId === groupId && normalizeExerciseGroupType(ex.groupType) === 'jumpset') {
+              return removeExerciseFromGroup(ex);
+            }
+            return ex;
+          })
+        };
+      }
+      return d;
+    }));
+    if (onShowToast) {
+      onShowToast('Jumpset rimosso.', 'success');
+    }
+  };
+
+  const handleDissolveCircuit = (dayId: string, groupId: string) => {
+    setGiornate(prev => prev.map(d => {
+      if (d.id === dayId) {
+        return {
+          ...d,
+          esercizi: d.esercizi.map(ex => {
+            if (ex.groupId === groupId && normalizeExerciseGroupType(ex.groupType) === 'circuit') {
+              return removeExerciseFromGroup(ex);
+            }
+            return ex;
+          })
+        };
+      }
+      return d;
+    }));
+    if (onShowToast) {
+      onShowToast('Circuito rimosso.', 'success');
+    }
+  };
+
   const resetSupersetSettingsState = () => {
     setSupersetSettingsModalOpen(false);
     setSupersetSettingsGroupId(null);
@@ -1489,7 +1644,10 @@ export default function WorkoutWizard({
     const day = giornate.find(d => d.id === dayId);
     if (!day) return;
 
-    const members = day.esercizi.filter(ex => ex.groupId === groupId);
+    const members = day.esercizi.filter(ex => 
+      ex.groupId === groupId && 
+      normalizeExerciseGroupType(ex.groupType) === "superset"
+    );
     if (members.length < 2) {
       if (onShowToast) {
         onShowToast("Un superset deve contenere almeno 2 esercizi per essere modificato.", "error");
@@ -1519,6 +1677,241 @@ export default function WorkoutWizard({
     }
 
     // Set states
+    setSupersetSettingsGroupType('superset');
+    setSupersetSettingsGroupId(groupId);
+    setSupersetSettingsDayId(dayId);
+    setTempRestBetweenSec(normalizedLeader.groupRestBetweenExercisesSec ?? 0);
+    setTempRestAfterSec(normalizedLeader.groupRestAfterRoundSec ?? 90);
+    setTempRounds(normalizedLeader.groupRounds ?? 1);
+    setSupersetSettingsHasMismatch(hasMismatch);
+    setValidationErrors({});
+    setSupersetSettingsModalOpen(true);
+  };
+
+  const handleOpenTrisetSettings = (dayId: string, groupId: string) => {
+    const day = giornate.find(d => d.id === dayId);
+    if (!day) return;
+
+    const members = day.esercizi.filter(ex => 
+      ex.groupId === groupId && 
+      normalizeExerciseGroupType(ex.groupType) === "triset"
+    );
+    if (members.length !== 3) {
+      // Se l'apertura fallisce, non aprire e non mostrare messaggi (evita toast o alert).
+      return;
+    }
+
+    // Find leader (groupOrder === 1) or fallback to first member
+    const sortedMembers = [...members].sort((a, b) => (a.groupOrder ?? Infinity) - (b.groupOrder ?? Infinity));
+    const leader = sortedMembers.find(m => m.groupOrder === 1) || sortedMembers[0];
+
+    const normalizedLeader = normalizeExerciseGroupData(leader);
+
+    // Check if they have different settings
+    let hasMismatch = false;
+    const firstNormalized = normalizeExerciseGroupData(sortedMembers[0]);
+    for (let i = 1; i < sortedMembers.length; i++) {
+      const norm = normalizeExerciseGroupData(sortedMembers[i]);
+      if (
+        norm.groupRestBetweenExercisesSec !== firstNormalized.groupRestBetweenExercisesSec ||
+        norm.groupRestAfterRoundSec !== firstNormalized.groupRestAfterRoundSec ||
+        norm.groupRounds !== firstNormalized.groupRounds
+      ) {
+        hasMismatch = true;
+        break;
+      }
+    }
+
+    // Set states
+    setSupersetSettingsGroupType('triset');
+    setSupersetSettingsGroupId(groupId);
+    setSupersetSettingsDayId(dayId);
+    setTempRestBetweenSec(normalizedLeader.groupRestBetweenExercisesSec ?? 0);
+    setTempRestAfterSec(normalizedLeader.groupRestAfterRoundSec ?? 90);
+    setTempRounds(normalizedLeader.groupRounds ?? 1);
+    setSupersetSettingsHasMismatch(hasMismatch);
+    setValidationErrors({});
+    setSupersetSettingsModalOpen(true);
+  };
+
+  const handleOpenCompoundSetSettings = (dayId: string, groupId: string) => {
+    const day = giornate.find(d => d.id === dayId);
+    if (!day) return;
+
+    const members = day.esercizi.filter(ex => 
+      ex.groupId === groupId && 
+      normalizeExerciseGroupType(ex.groupType) === "compound_set"
+    );
+    if (members.length !== 2) {
+      return;
+    }
+
+    if (members[0].distrettoMuscolare !== members[1].distrettoMuscolare) {
+      return;
+    }
+
+    // Find leader (groupOrder === 1) or fallback to first member
+    const sortedMembers = [...members].sort((a, b) => (a.groupOrder ?? Infinity) - (b.groupOrder ?? Infinity));
+    const leader = sortedMembers.find(m => m.groupOrder === 1) || sortedMembers[0];
+
+    const normalizedLeader = normalizeExerciseGroupData(leader);
+
+    // Check if they have different settings
+    let hasMismatch = false;
+    const firstNormalized = normalizeExerciseGroupData(sortedMembers[0]);
+    for (let i = 1; i < sortedMembers.length; i++) {
+      const norm = normalizeExerciseGroupData(sortedMembers[i]);
+      if (
+        norm.groupRestBetweenExercisesSec !== firstNormalized.groupRestBetweenExercisesSec ||
+        norm.groupRestAfterRoundSec !== firstNormalized.groupRestAfterRoundSec ||
+        norm.groupRounds !== firstNormalized.groupRounds
+      ) {
+        hasMismatch = true;
+        break;
+      }
+    }
+
+    // Set states
+    setSupersetSettingsGroupType('compound_set');
+    setSupersetSettingsGroupId(groupId);
+    setSupersetSettingsDayId(dayId);
+    setTempRestBetweenSec(normalizedLeader.groupRestBetweenExercisesSec ?? 0);
+    setTempRestAfterSec(normalizedLeader.groupRestAfterRoundSec ?? 90);
+    setTempRounds(normalizedLeader.groupRounds ?? 1);
+    setSupersetSettingsHasMismatch(hasMismatch);
+    setValidationErrors({});
+    setSupersetSettingsModalOpen(true);
+  };
+
+  const handleOpenGiantSetSettings = (dayId: string, groupId: string) => {
+    const day = giornate.find(d => d.id === dayId);
+    if (!day) return;
+
+    const members = day.esercizi.filter(ex => 
+      ex.groupId === groupId && 
+      normalizeExerciseGroupType(ex.groupType) === "giant_set"
+    );
+    if (members.length < 4) {
+      return;
+    }
+
+    // Find leader (groupOrder === 1) or fallback to first member
+    const sortedMembers = [...members].sort((a, b) => (a.groupOrder ?? Infinity) - (b.groupOrder ?? Infinity));
+    const leader = sortedMembers.find(m => m.groupOrder === 1) || sortedMembers[0];
+
+    const normalizedLeader = normalizeExerciseGroupData(leader);
+
+    // Check if they have different settings
+    let hasMismatch = false;
+    const firstNormalized = normalizeExerciseGroupData(sortedMembers[0]);
+    for (let i = 1; i < sortedMembers.length; i++) {
+      const norm = normalizeExerciseGroupData(sortedMembers[i]);
+      if (
+        norm.groupRestBetweenExercisesSec !== firstNormalized.groupRestBetweenExercisesSec ||
+        norm.groupRestAfterRoundSec !== firstNormalized.groupRestAfterRoundSec ||
+        norm.groupRounds !== firstNormalized.groupRounds
+      ) {
+        hasMismatch = true;
+        break;
+      }
+    }
+
+    // Set states
+    setSupersetSettingsGroupType('giant_set');
+    setSupersetSettingsGroupId(groupId);
+    setSupersetSettingsDayId(dayId);
+    setTempRestBetweenSec(normalizedLeader.groupRestBetweenExercisesSec ?? 0);
+    setTempRestAfterSec(normalizedLeader.groupRestAfterRoundSec ?? 90);
+    setTempRounds(normalizedLeader.groupRounds ?? 1);
+    setSupersetSettingsHasMismatch(hasMismatch);
+    setValidationErrors({});
+    setSupersetSettingsModalOpen(true);
+  };
+
+  const handleOpenJumpsetSettings = (dayId: string, groupId: string) => {
+    const day = giornate.find(d => d.id === dayId);
+    if (!day) return;
+
+    const members = day.esercizi.filter(ex => 
+      ex.groupId === groupId && 
+      normalizeExerciseGroupType(ex.groupType) === "jumpset"
+    );
+    if (members.length !== 2) {
+      return;
+    }
+
+    if (members[0].distrettoMuscolare === members[1].distrettoMuscolare) {
+      return;
+    }
+
+    // Find leader (groupOrder === 1) or fallback to first member
+    const sortedMembers = [...members].sort((a, b) => (a.groupOrder ?? Infinity) - (b.groupOrder ?? Infinity));
+    const leader = sortedMembers.find(m => m.groupOrder === 1) || sortedMembers[0];
+
+    const normalizedLeader = normalizeExerciseGroupData(leader);
+
+    // Check if they have different settings
+    let hasMismatch = false;
+    const firstNormalized = normalizeExerciseGroupData(sortedMembers[0]);
+    for (let i = 1; i < sortedMembers.length; i++) {
+      const norm = normalizeExerciseGroupData(sortedMembers[i]);
+      if (
+        norm.groupRestBetweenExercisesSec !== firstNormalized.groupRestBetweenExercisesSec ||
+        norm.groupRestAfterRoundSec !== firstNormalized.groupRestAfterRoundSec ||
+        norm.groupRounds !== firstNormalized.groupRounds
+      ) {
+        hasMismatch = true;
+        break;
+      }
+    }
+
+    // Set states
+    setSupersetSettingsGroupType('jumpset');
+    setSupersetSettingsGroupId(groupId);
+    setSupersetSettingsDayId(dayId);
+    setTempRestBetweenSec(normalizedLeader.groupRestBetweenExercisesSec ?? DEFAULT_JUMPSET_REST_BETWEEN_EXERCISES_SEC);
+    setTempRestAfterSec(normalizedLeader.groupRestAfterRoundSec ?? 90);
+    setTempRounds(normalizedLeader.groupRounds ?? 1);
+    setSupersetSettingsHasMismatch(hasMismatch);
+    setValidationErrors({});
+    setSupersetSettingsModalOpen(true);
+  };
+
+  const handleOpenCircuitSettings = (dayId: string, groupId: string) => {
+    const day = giornate.find(d => d.id === dayId);
+    if (!day) return;
+
+    const members = day.esercizi.filter(ex => 
+      ex.groupId === groupId && 
+      normalizeExerciseGroupType(ex.groupType) === "circuit"
+    );
+    if (members.length < 4) {
+      return;
+    }
+
+    // Find leader (groupOrder === 1) or fallback to first member
+    const sortedMembers = [...members].sort((a, b) => (a.groupOrder ?? Infinity) - (b.groupOrder ?? Infinity));
+    const leader = sortedMembers.find(m => m.groupOrder === 1) || sortedMembers[0];
+
+    const normalizedLeader = normalizeExerciseGroupData(leader);
+
+    // Check if they have different settings
+    let hasMismatch = false;
+    const firstNormalized = normalizeExerciseGroupData(sortedMembers[0]);
+    for (let i = 1; i < sortedMembers.length; i++) {
+      const norm = normalizeExerciseGroupData(sortedMembers[i]);
+      if (
+        norm.groupRestBetweenExercisesSec !== firstNormalized.groupRestBetweenExercisesSec ||
+        norm.groupRestAfterRoundSec !== firstNormalized.groupRestAfterRoundSec ||
+        norm.groupRounds !== firstNormalized.groupRounds
+      ) {
+        hasMismatch = true;
+        break;
+      }
+    }
+
+    // Set states
+    setSupersetSettingsGroupType('circuit');
     setSupersetSettingsGroupId(groupId);
     setSupersetSettingsDayId(dayId);
     setTempRestBetweenSec(normalizedLeader.groupRestBetweenExercisesSec ?? 0);
@@ -1532,15 +1925,65 @@ export default function WorkoutWizard({
   const handleSaveSupersetSettings = () => {
     if (!supersetSettingsDayId || !supersetSettingsGroupId) return;
 
-    // Validation
+    const isTriset = supersetSettingsGroupType === 'triset';
+    const isCompoundSet = supersetSettingsGroupType === 'compound_set';
+    const isGiantSet = supersetSettingsGroupType === 'giant_set';
+    const isJumpset = supersetSettingsGroupType === 'jumpset';
+    const isCircuit = supersetSettingsGroupType === 'circuit';
+    
+    const groupName = isCircuit ? 'Circuito' : isJumpset ? 'Jumpset' : isGiantSet ? 'Giant Set' : isCompoundSet ? 'Compound Set' : isTriset ? 'Triset' : 'Superset';
+    const requiredType = supersetSettingsGroupType;
+
+    // Retrieve the day and members from the current state to verify validity
+    const currentDay = giornate.find(d => d.id === supersetSettingsDayId);
+    if (!currentDay) {
+      if (onShowToast) {
+        onShowToast(`Il ${groupName} non è più disponibile o non è valido.`, "error");
+      }
+      resetSupersetSettingsState();
+      return;
+    }
+
+    const currentMembers = currentDay.esercizi.filter(ex => 
+      ex.groupId === supersetSettingsGroupId && 
+      normalizeExerciseGroupType(ex.groupType) === requiredType
+    );
+
+    const isInvalid = isTriset 
+      ? currentMembers.length !== 3 
+      : isCompoundSet 
+        ? (currentMembers.length !== 2 || currentMembers[0].distrettoMuscolare !== currentMembers[1].distrettoMuscolare)
+        : isGiantSet
+          ? currentMembers.length < 4
+          : isJumpset
+            ? (currentMembers.length !== 2 || currentMembers[0].distrettoMuscolare === currentMembers[1].distrettoMuscolare)
+            : isCircuit
+              ? currentMembers.length < 4
+              : currentMembers.length < 2;
+
+    if (isInvalid) {
+      if (onShowToast) {
+        onShowToast(`Il ${groupName} non è più disponibile o non è valido.`, "error");
+      }
+      resetSupersetSettingsState();
+      return;
+    }
+
+    // Form inputs validation
     const errors: { restBetween?: string; restAfter?: string; rounds?: string } = {};
 
     const valBetween = tempRestBetweenSec === "" ? NaN : Number(tempRestBetweenSec);
     const valAfter = tempRestAfterSec === "" ? NaN : Number(tempRestAfterSec);
     const valRounds = tempRounds === "" ? NaN : Number(tempRounds);
 
-    if (Number.isNaN(valBetween) || !Number.isInteger(valBetween) || valBetween < 0 || valBetween > 600) {
-      errors.restBetween = "Deve essere un intero tra 0 e 600 secondi.";
+    if (isJumpset) {
+      if (Number.isNaN(valBetween) || !Number.isInteger(valBetween) || valBetween < 1 || valBetween > 600) {
+        errors.restBetween = "Il Jumpset richiede almeno 1 secondo di recupero tra gli esercizi.";
+      }
+    } else {
+      if (Number.isNaN(valBetween) || !Number.isInteger(valBetween) || valBetween < 0 || valBetween > 600) {
+        errors.restBetween = "Deve essere un intero tra 0 e 600 secondi.";
+      }
     }
 
     if (Number.isNaN(valAfter) || !Number.isInteger(valAfter) || valAfter < 0 || valAfter > 900) {
@@ -1556,13 +1999,13 @@ export default function WorkoutWizard({
       return;
     }
 
-    // Update all members of the same superset
+    // Update only the members with the same groupId and groupType valid
     setGiornate(prev => prev.map(d => {
       if (d.id === supersetSettingsDayId) {
         return {
           ...d,
           esercizi: d.esercizi.map(ex => {
-            if (ex.groupId === supersetSettingsGroupId) {
+            if (ex.groupId === supersetSettingsGroupId && normalizeExerciseGroupType(ex.groupType) === requiredType) {
               return {
                 ...ex,
                 groupRestBetweenExercisesSec: valBetween,
@@ -1580,7 +2023,7 @@ export default function WorkoutWizard({
     // Reset state & close
     resetSupersetSettingsState();
     if (onShowToast) {
-      onShowToast("Impostazioni Superset aggiornate.", "success");
+      onShowToast(`Impostazioni ${groupName} aggiornate.`, "success");
     }
   };
 
@@ -2711,23 +3154,105 @@ export default function WorkoutWizard({
 
                   {/* Actions buttons */}
                   <div className="flex flex-wrap items-center gap-2">
-                    {supersetSelectionDayId === day.id ? (
+                    {groupSelectionDayId === day.id ? (
                       <>
+                        <span className="text-xs text-white/60 font-medium animate-pulse">
+                          {groupSelectionType === 'jumpset' 
+                            ? 'Seleziona 2 esercizi da alternare' 
+                            : groupSelectionType === 'circuit'
+                              ? 'Seleziona 4 esercizi per il Circuito'
+                              : `Seleziona ${getRequiredGroupMemberCount(groupSelectionType)} esercizi`}
+                        </span>
+
+                        {/* SWITCHER PER CAMBIARE TIPO DI GRUPPO IN CORSO */}
+                        <div className="flex items-center gap-1 bg-black/20 p-1 rounded-xl border border-white/5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setGroupSelectionType('superset');
+                              setSelectedExerciseIds([]);
+                            }}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${groupSelectionType === 'superset' ? 'text-neutral-950 font-extrabold' : 'text-white/60 hover:text-white hover:bg-white/5'}`}
+                            style={groupSelectionType === 'superset' ? { backgroundColor: config.primaryColor } : {}}
+                          >
+                            Superset
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setGroupSelectionType('compound_set');
+                              setSelectedExerciseIds([]);
+                            }}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${groupSelectionType === 'compound_set' ? 'text-neutral-950 font-extrabold' : 'text-white/60 hover:text-white hover:bg-white/5'}`}
+                            style={groupSelectionType === 'compound_set' ? { backgroundColor: config.primaryColor } : {}}
+                          >
+                            Compound Set
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setGroupSelectionType('jumpset');
+                              setSelectedExerciseIds([]);
+                            }}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${groupSelectionType === 'jumpset' ? 'text-neutral-950 font-extrabold' : 'text-white/60 hover:text-white hover:bg-white/5'}`}
+                            style={groupSelectionType === 'jumpset' ? { backgroundColor: config.primaryColor } : {}}
+                          >
+                            {EXERCISE_GROUP_LABELS['jumpset']}
+                          </button>
+                          {day.esercizi.length >= 3 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setGroupSelectionType('triset');
+                                setSelectedExerciseIds([]);
+                              }}
+                              className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${groupSelectionType === 'triset' ? 'text-neutral-950 font-extrabold' : 'text-white/60 hover:text-white hover:bg-white/5'}`}
+                              style={groupSelectionType === 'triset' ? { backgroundColor: config.primaryColor } : {}}
+                            >
+                              Triset
+                            </button>
+                          )}
+                          {day.esercizi.length >= 4 && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setGroupSelectionType('giant_set');
+                                  setSelectedExerciseIds([]);
+                                }}
+                                className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${groupSelectionType === 'giant_set' ? 'text-neutral-950 font-extrabold' : 'text-white/60 hover:text-white hover:bg-white/5'}`}
+                                style={groupSelectionType === 'giant_set' ? { backgroundColor: config.primaryColor } : {}}
+                              >
+                                Giant Set
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setGroupSelectionType('circuit');
+                                  setSelectedExerciseIds([]);
+                                }}
+                                className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${groupSelectionType === 'circuit' ? 'text-neutral-950 font-extrabold' : 'text-white/60 hover:text-white hover:bg-white/5'}`}
+                                style={groupSelectionType === 'circuit' ? { backgroundColor: config.primaryColor } : {}}
+                              >
+                                {EXERCISE_GROUP_LABELS['circuit']}
+                              </button>
+                            </>
+                          )}
+                        </div>
+
+                        {selectedExerciseIds.length === getRequiredGroupMemberCount(groupSelectionType) && (
+                          <button
+                            type="button"
+                            onClick={() => handleConfirmExerciseGroup(day.id)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm text-neutral-950 bg-green-500 hover:bg-green-400"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Conferma {groupSelectionType ? EXERCISE_GROUP_LABELS[groupSelectionType] : ''}</span>
+                          </button>
+                        )}
                         <button
                           type="button"
-                          disabled={selectedExerciseIds.length !== 2}
-                          onClick={() => handleConfirmSuperset(day.id)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm text-neutral-950 bg-green-500 hover:bg-green-400 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                          <span>Conferma Superset</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSupersetSelectionDayId(null);
-                            setSelectedExerciseIds([]);
-                          }}
+                          onClick={resetGroupSelection}
                           className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-white/60 hover:text-white hover:bg-neutral-900 transition-all text-xs cursor-pointer"
                         >
                           <X className="w-3.5 h-3.5" />
@@ -2736,23 +3261,110 @@ export default function WorkoutWizard({
                       </>
                     ) : (
                       <>
-                        {/* Only show "Crea Superset" if we are not in selection mode on another day and day has >= 2 exercises */}
-                        {(supersetSelectionDayId === null || supersetSelectionDayId === day.id) && day.esercizi.length >= 2 && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSupersetSelectionDayId(day.id);
-                              setSelectedExerciseIds([]);
-                            }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-neutral-800 border border-white/10 text-white/80 hover:text-white hover:bg-neutral-700 transition-all text-xs cursor-pointer"
-                          >
-                            <Link className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
-                            <span>Crea Superset</span>
-                          </button>
+                        {/* Only show "Crea gruppo" if we are not in selection mode and day has >= 2 exercises */}
+                        {groupSelectionDayId === null && day.esercizi.length >= 2 && (
+                          <div className="relative animate-fadeIn">
+                            <button
+                              type="button"
+                              onClick={() => setActiveGroupMenuDayId(activeGroupMenuDayId === day.id ? null : day.id)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-neutral-800 border border-white/10 text-white/80 hover:text-white hover:bg-neutral-700 transition-all text-xs cursor-pointer"
+                            >
+                              <Link className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                              <span>Crea gruppo</span>
+                            </button>
+                            {activeGroupMenuDayId === day.id && (
+                              <div className="absolute left-0 mt-2 w-40 bg-neutral-900 border border-white/10 rounded-xl shadow-2xl z-30 overflow-hidden py-1 text-left">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setGroupSelectionDayId(day.id);
+                                    setGroupSelectionType('superset');
+                                    setSelectedExerciseIds([]);
+                                    setActiveGroupMenuDayId(null);
+                                  }}
+                                  className="w-full px-4 py-2 text-xs text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-2"
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: config.primaryColor }} />
+                                  <span>Superset</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setGroupSelectionDayId(day.id);
+                                    setGroupSelectionType('compound_set');
+                                    setSelectedExerciseIds([]);
+                                    setActiveGroupMenuDayId(null);
+                                  }}
+                                  className="w-full px-4 py-2 text-xs text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-2"
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: config.primaryColor }} />
+                                  <span>Compound Set</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setGroupSelectionDayId(day.id);
+                                    setGroupSelectionType('jumpset');
+                                    setSelectedExerciseIds([]);
+                                    setActiveGroupMenuDayId(null);
+                                  }}
+                                  className="w-full px-4 py-2 text-xs text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-2"
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: config.primaryColor }} />
+                                  <span>{EXERCISE_GROUP_LABELS['jumpset']}</span>
+                                </button>
+                                {day.esercizi.length >= 3 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setGroupSelectionDayId(day.id);
+                                      setGroupSelectionType('triset');
+                                      setSelectedExerciseIds([]);
+                                      setActiveGroupMenuDayId(null);
+                                    }}
+                                    className="w-full px-4 py-2 text-xs text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-2"
+                                  >
+                                    <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: config.primaryColor }} />
+                                    <span>Triset</span>
+                                  </button>
+                                )}
+                                {day.esercizi.length >= 4 && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setGroupSelectionDayId(day.id);
+                                        setGroupSelectionType('giant_set');
+                                        setSelectedExerciseIds([]);
+                                        setActiveGroupMenuDayId(null);
+                                      }}
+                                      className="w-full px-4 py-2 text-xs text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-2"
+                                    >
+                                      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: config.primaryColor }} />
+                                      <span>Giant Set</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setGroupSelectionDayId(day.id);
+                                        setGroupSelectionType('circuit');
+                                        setSelectedExerciseIds([]);
+                                        setActiveGroupMenuDayId(null);
+                                      }}
+                                      className="w-full px-4 py-2 text-xs text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-2"
+                                    >
+                                      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: config.primaryColor }} />
+                                      <span>{EXERCISE_GROUP_LABELS['circuit']}</span>
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         )}
 
                         {/* Aggiungi esercizio */}
-                        {supersetSelectionDayId === null && (
+                        {groupSelectionDayId === null && (
                           <button
                             type="button"
                             onClick={() => openExercisePicker(day.id)}
@@ -2765,7 +3377,7 @@ export default function WorkoutWizard({
                         )}
 
                         {/* Duplica */}
-                        {supersetSelectionDayId === null && (
+                        {groupSelectionDayId === null && (
                           <button
                             type="button"
                             onClick={() => handleDuplicateDay(day.id)}
@@ -2777,7 +3389,7 @@ export default function WorkoutWizard({
                         )}
 
                         {/* Copia */}
-                        {supersetSelectionDayId === null && (
+                        {groupSelectionDayId === null && (
                           <button
                             type="button"
                             onClick={() => {
@@ -2797,7 +3409,7 @@ export default function WorkoutWizard({
                         )}
 
                         {/* Altre azioni dropdown */}
-                        {supersetSelectionDayId === null && (
+                        {groupSelectionDayId === null && (
                           <div className="relative">
                             <button
                               type="button"
@@ -3102,32 +3714,61 @@ export default function WorkoutWizard({
                                 style={{ left: '285px', width: '175px', minWidth: '175px' }}
                               >
                                 <div className="flex flex-col gap-1">
-                                  {supersetSelectionDayId === day.id && (
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <input
-                                        type="checkbox"
-                                        checked={selectedExerciseIds.includes(ex.id)}
-                                        disabled={isInGroup || (selectedExerciseIds.length >= 2 && !selectedExerciseIds.includes(ex.id))}
-                                        onChange={(e) => {
-                                          if (e.target.checked) {
-                                            if (selectedExerciseIds.length < 2) {
-                                              setSelectedExerciseIds(prev => [...prev, ex.id]);
+                                  {groupSelectionDayId === day.id && (() => {
+                                    const isCompoundSetDisabled = (() => {
+                                      if (groupSelectionType !== 'compound_set') return false;
+                                      if (selectedExerciseIds.length !== 1) return false;
+                                      const firstSelectedEx = day.esercizi.find(e => e.id === selectedExerciseIds[0]);
+                                      if (!firstSelectedEx) return false;
+                                      return ex.distrettoMuscolare !== firstSelectedEx.distrettoMuscolare;
+                                    })();
+
+                                    const isJumpsetDisabled = (() => {
+                                      if (groupSelectionType !== 'jumpset') return false;
+                                      if (selectedExerciseIds.length !== 1) return false;
+                                      const firstSelectedEx = day.esercizi.find(e => e.id === selectedExerciseIds[0]);
+                                      if (!firstSelectedEx) return false;
+                                      return ex.distrettoMuscolare === firstSelectedEx.distrettoMuscolare;
+                                    })();
+
+                                    return (
+                                      <div className="flex items-center gap-2 mb-1 animate-fadeIn">
+                                        <input
+                                          type="checkbox"
+                                          checked={selectedExerciseIds.includes(ex.id)}
+                                          disabled={isInGroup || isCompoundSetDisabled || isJumpsetDisabled || (selectedExerciseIds.length >= getRequiredGroupMemberCount(groupSelectionType) && !selectedExerciseIds.includes(ex.id))}
+                                          onChange={(e) => {
+                                            const maxCount = getRequiredGroupMemberCount(groupSelectionType);
+                                            if (e.target.checked) {
+                                              if (selectedExerciseIds.length < maxCount) {
+                                                setSelectedExerciseIds(prev => [...prev, ex.id]);
+                                              }
+                                            } else {
+                                              setSelectedExerciseIds(prev => prev.filter(id => id !== ex.id));
                                             }
-                                          } else {
-                                            setSelectedExerciseIds(prev => prev.filter(id => id !== ex.id));
-                                          }
-                                        }}
-                                        className="h-3.5 w-3.5 rounded border-white/20 bg-black text-[#CCFF00] focus:ring-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                                        style={{ accentColor: config.primaryColor }}
-                                        aria-label={`Seleziona ${ex.nome} per superset`}
-                                      />
-                                      {isInGroup && (
-                                        <span className="text-[10px] text-red-400 font-medium">
-                                          Questo esercizio appartiene già a un gruppo.
-                                        </span>
-                                      )}
-                                    </div>
-                                  )}
+                                          }}
+                                          className="h-3.5 w-3.5 rounded border-white/20 bg-black text-[#CCFF00] focus:ring-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                          style={{ accentColor: config.primaryColor }}
+                                          aria-label={`Seleziona ${ex.nome} per ${groupSelectionType ? EXERCISE_GROUP_LABELS[groupSelectionType] : ''}`}
+                                        />
+                                        {isInGroup && (
+                                          <span className="text-[10px] text-red-400 font-medium">
+                                            Questo esercizio appartiene già a un gruppo.
+                                          </span>
+                                        )}
+                                        {isCompoundSetDisabled && (
+                                          <span className="text-[10px] text-red-400 font-medium leading-tight">
+                                            Il Compound Set richiede esercizi dello stesso distretto muscolare.
+                                          </span>
+                                        )}
+                                        {isJumpsetDisabled && (
+                                          <span className="text-[10px] text-red-400 font-medium leading-tight">
+                                            Il Jumpset richiede due distretti muscolari differenti.
+                                          </span>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
 
                                   <div className="flex items-center gap-1 font-extrabold text-white text-xs" title={ex.nome}>
                                     {groupIndex !== -1 && (
@@ -3136,17 +3777,46 @@ export default function WorkoutWizard({
                                           {memberLabel}
                                         </span>
                                         <span className="px-1 py-0.5 rounded text-[8px] font-black uppercase text-white/90 border" style={{ borderColor: `${config.primaryColor}50`, backgroundColor: `${config.primaryColor}15` }}>
-                                          Superset
+                                          {normalizeExerciseGroupType(ex.groupType) === 'triset' 
+                                            ? 'Triset' 
+                                            : normalizeExerciseGroupType(ex.groupType) === 'compound_set' 
+                                              ? 'Compound Set' 
+                                              : normalizeExerciseGroupType(ex.groupType) === 'giant_set'
+                                                ? 'Giant Set'
+                                                : normalizeExerciseGroupType(ex.groupType) === 'jumpset'
+                                                  ? 'Jumpset'
+                                                  : normalizeExerciseGroupType(ex.groupType) === 'circuit'
+                                                    ? 'Circuito'
+                                                    : 'Superset'}
                                         </span>
-                                        {normalizeExerciseGroupType(ex.groupType) === 'superset' && ex.groupOrder === 1 && (() => {
+                                        {(normalizeExerciseGroupType(ex.groupType) === 'superset' || normalizeExerciseGroupType(ex.groupType) === 'triset' || normalizeExerciseGroupType(ex.groupType) === 'compound_set' || normalizeExerciseGroupType(ex.groupType) === 'giant_set' || normalizeExerciseGroupType(ex.groupType) === 'jumpset' || normalizeExerciseGroupType(ex.groupType) === 'circuit') && ex.groupOrder === 1 && (() => {
                                           const normEx = normalizeExerciseGroupData(ex);
                                           const restBetween = normEx.groupRestBetweenExercisesSec ?? 0;
                                           const restAfter = normEx.groupRestAfterRoundSec ?? 90;
                                           const rounds = normEx.groupRounds ?? 1;
+                                          const isJumpsetGroup = normalizeExerciseGroupType(ex.groupType) === 'jumpset';
+                                          const isCircuitGroup = normalizeExerciseGroupType(ex.groupType) === 'circuit';
+                                          const nextLabel = getGroupMemberLabel(groupIndex, 2);
                                           return (
-                                            <span className="text-[9px] text-[#CCFF00]/90 font-bold bg-neutral-900 border border-[#CCFF00]/25 px-1.5 py-0.5 rounded-md" style={{ color: config.primaryColor, borderColor: `${config.primaryColor}40` }}>
-                                              {restBetween}s tra esercizi • {restAfter}s dopo • {rounds} {rounds === 1 ? 'giro' : 'giri'}
-                                            </span>
+                                            <div className="flex flex-col gap-0.5 max-w-[200px] sm:max-w-xs">
+                                              <span className="text-[9px] text-[#CCFF00]/90 font-bold bg-neutral-900 border border-[#CCFF00]/25 px-1.5 py-0.5 rounded-md w-fit" style={{ color: config.primaryColor, borderColor: `${config.primaryColor}40` }}>
+                                                {isJumpsetGroup 
+                                                  ? `${restBetween}s tra ${memberLabel} e ${nextLabel} • ${restAfter}s dopo • ${rounds} ${rounds === 1 ? 'giro' : 'giri'}`
+                                                  : isCircuitGroup
+                                                    ? `${restBetween}s tra le stazioni • ${restAfter}s dopo il giro • ${rounds} ${rounds === 1 ? 'giro' : 'giri'}`
+                                                    : `${restBetween}s tra esercizi • ${restAfter}s dopo • ${rounds} ${rounds === 1 ? 'giro' : 'giri'}`}
+                                              </span>
+                                              {isJumpsetGroup && (
+                                                <span className="text-[9px] text-white/50 font-normal italic leading-snug">
+                                                  Alterna {memberLabel} e {nextLabel} rispettando il recupero indicato.
+                                                </span>
+                                              )}
+                                              {isCircuitGroup && (
+                                                <span className="text-[9px] text-white/50 font-normal italic leading-snug">
+                                                  Esegui le stazioni in sequenza.
+                                                </span>
+                                              )}
+                                            </div>
                                           );
                                         })()}
                                       </div>
@@ -3396,32 +4066,166 @@ export default function WorkoutWizard({
                                       <span>Unisci in Super Set</span>
                                     </button>
                                   )}
-                                  {isInGroup && ex.groupId && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        handleDissolveSuperset(day.id, ex.groupId!);
-                                        setActiveActionMenuExId(null);
-                                      }}
-                                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5"
-                                    >
-                                      <Unlink className="w-3.5 h-3.5" />
-                                      <span>Sciogli Superset</span>
-                                    </button>
+                                  {ex.groupId && normalizeExerciseGroupType(ex.groupType) === 'superset' && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleDissolveSuperset(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Unlink className="w-3.5 h-3.5" />
+                                        <span>Sciogli Superset</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleOpenSupersetSettings(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                                        <span>Impostazioni Superset</span>
+                                      </button>
+                                    </>
                                   )}
 
-                                  {ex.groupId && normalizeExerciseGroupType(ex.groupType) === 'superset' && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        handleOpenSupersetSettings(day.id, ex.groupId!);
-                                        setActiveActionMenuExId(null);
-                                      }}
-                                      className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
-                                    >
-                                      <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
-                                      <span>Impostazioni Superset</span>
-                                    </button>
+                                  {ex.groupId && normalizeExerciseGroupType(ex.groupType) === 'triset' && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleDissolveTriset(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Unlink className="w-3.5 h-3.5" />
+                                        <span>Sciogli Triset</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleOpenTrisetSettings(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                                        <span>Impostazioni Triset</span>
+                                      </button>
+                                    </>
+                                  )}
+
+                                  {ex.groupId && normalizeExerciseGroupType(ex.groupType) === 'compound_set' && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleDissolveCompoundSet(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Unlink className="w-3.5 h-3.5" />
+                                        <span>Sciogli Compound Set</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleOpenCompoundSetSettings(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                                        <span>Impostazioni Compound Set</span>
+                                      </button>
+                                    </>
+                                  )}
+
+                                  {ex.groupId && normalizeExerciseGroupType(ex.groupType) === 'giant_set' && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleDissolveGiantSet(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Unlink className="w-3.5 h-3.5" />
+                                        <span>Sciogli Giant Set</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleOpenGiantSetSettings(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                                        <span>Impostazioni Giant Set</span>
+                                      </button>
+                                    </>
+                                  )}
+
+                                  {ex.groupId && normalizeExerciseGroupType(ex.groupType) === 'jumpset' && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleDissolveJumpset(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Unlink className="w-3.5 h-3.5" />
+                                        <span>Sciogli Jumpset</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleOpenJumpsetSettings(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                                        <span>Impostazioni Jumpset</span>
+                                      </button>
+                                    </>
+                                  )}
+
+                                  {ex.groupId && normalizeExerciseGroupType(ex.groupType) === 'circuit' && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleDissolveCircuit(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-red-400 hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Unlink className="w-3.5 h-3.5" />
+                                        <span>Sciogli Circuito</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleOpenCircuitSettings(day.id, ex.groupId!);
+                                          setActiveActionMenuExId(null);
+                                        }}
+                                        className="w-full px-3 py-1.5 text-[11px] text-white/70 hover:text-white hover:bg-white/5 flex items-center gap-1.5"
+                                      >
+                                        <Settings className="w-3.5 h-3.5" style={{ color: config.primaryColor }} />
+                                        <span>Impostazioni Circuito</span>
+                                      </button>
+                                    </>
                                   )}
 
                                   {/* Sposta su / giù */}
@@ -4050,7 +4854,19 @@ export default function WorkoutWizard({
           <div className="w-full max-w-md bg-[#121212] border border-white/10 rounded-2xl overflow-hidden shadow-2xl p-6 flex flex-col gap-4 text-left">
             <div className="flex items-center gap-2 border-b border-white/5 pb-3">
               <Settings className="w-5 h-5 text-[#CCFF00]" style={{ color: config.primaryColor }} />
-              <h3 className="font-extrabold text-white text-base">Impostazioni Superset</h3>
+              <h3 className="font-extrabold text-white text-base">
+                {supersetSettingsGroupType === 'triset' 
+                  ? 'Impostazioni Triset' 
+                  : supersetSettingsGroupType === 'compound_set' 
+                    ? 'Impostazioni Compound Set' 
+                    : supersetSettingsGroupType === 'giant_set'
+                      ? 'Impostazioni Giant Set'
+                      : supersetSettingsGroupType === 'jumpset'
+                        ? 'Impostazioni Jumpset'
+                        : supersetSettingsGroupType === 'circuit'
+                          ? 'Impostazioni Circuito'
+                          : 'Impostazioni Superset'}
+              </h3>
             </div>
 
             {supersetSettingsHasMismatch && (
@@ -4066,11 +4882,15 @@ export default function WorkoutWizard({
               {/* Recupero tra gli esercizi */}
               <div className="space-y-1">
                 <label className="block text-[11px] font-bold text-white/60 uppercase tracking-wider">
-                  Recupero tra gli esercizi (secondi)
+                  {supersetSettingsGroupType === 'jumpset' 
+                    ? 'Recupero tra A1 e A2 (secondi)' 
+                    : supersetSettingsGroupType === 'circuit'
+                      ? 'Recupero tra le stazioni (secondi)'
+                      : 'Recupero tra gli esercizi (secondi)'}
                 </label>
                 <input
                   type="number"
-                  min="0"
+                  min={supersetSettingsGroupType === 'jumpset' ? "1" : "0"}
                   max="600"
                   step="1"
                   value={tempRestBetweenSec}
