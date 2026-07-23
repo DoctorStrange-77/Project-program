@@ -210,6 +210,107 @@ export interface ClientMeasurement {
   updatedAt?: string;
 }
 
+export type TrainingEnvironmentType =
+  | 'palestra_commerciale'
+  | 'studio_personal'
+  | 'home_gym'
+  | 'casa'
+  | 'outdoor'
+  | 'altro';
+
+export type TrainingEnvironmentStatus =
+  | 'attivo'
+  | 'secondario'
+  | 'archiviato';
+
+export type GymEquipmentCategory =
+  | 'macchine_petto'
+  | 'macchine_dorso'
+  | 'macchine_spalle'
+  | 'macchine_braccia'
+  | 'macchine_gambe'
+  | 'cavi'
+  | 'bilancieri'
+  | 'manubri'
+  | 'dischi'
+  | 'panche'
+  | 'rack_supporti'
+  | 'corpo_libero'
+  | 'cardio'
+  | 'accessori'
+  | 'riabilitazione'
+  | 'altro';
+
+export type GymEquipmentAvailability =
+  | 'disponibile'
+  | 'disponibilita_limitata'
+  | 'temporaneamente_non_disponibile'
+  | 'non_disponibile';
+
+export type GymEquipmentResistanceType =
+  | 'pacco_pesi'
+  | 'caricamento_dischi'
+  | 'cavi'
+  | 'pneumatica'
+  | 'elastici'
+  | 'peso_libero'
+  | 'corpo_libero'
+  | 'altro';
+
+export interface GymEquipmentItem {
+  id: string;
+
+  nome: string;
+  categoria: GymEquipmentCategory;
+  disponibilita: GymEquipmentAvailability;
+
+  marca?: string;
+  modello?: string;
+  quantita?: number;
+
+  tipoResistenza?: GymEquipmentResistanceType;
+
+  caricoMinimoKg?: number;
+  caricoMassimoKg?: number;
+  incrementoCaricoKg?: number;
+
+  unilaterale?: boolean;
+  convergente?: boolean;
+  regolabile?: boolean;
+  microcaricoDisponibile?: boolean;
+
+  rapportoCarrucola?: string;
+
+  caratteristiche?: string;
+  limitazioni?: string;
+  noteCoach?: string;
+
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TrainingEnvironment {
+  id: string;
+
+  nome: string;
+  tipo: TrainingEnvironmentType;
+  stato: TrainingEnvironmentStatus;
+
+  nomeStruttura?: string;
+  localita?: string;
+
+  giorniDisponibili?: string[];
+  fasciaOraria?: string;
+
+  equipment: GymEquipmentItem[];
+
+  limitazioniGenerali?: string;
+  noteGenerali?: string;
+
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Client {
   id: string;
   nome: string;
@@ -230,6 +331,7 @@ export interface Client {
   prossimoControllo?: string; // YYYY-MM-DD (Date of next check-in)
   rilevazioni?: ClientMeasurement[];
   checkIns?: ClientCheckIn[];
+  trainingEnvironments?: TrainingEnvironment[];
 }
 
 export type ClientCheckType =

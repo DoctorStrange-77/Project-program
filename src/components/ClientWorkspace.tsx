@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import LogbookTracker from './LogbookTracker';
 import ClientAnthropometry from './ClientAnthropometry';
+import ClientGymEquipment, { ENV_TYPE_LABELS } from './ClientGymEquipment';
 
 interface ClientWorkspaceProps {
   client: Client;
@@ -842,7 +843,7 @@ export default function ClientWorkspace({
     { id: 'check', label: 'Check', icon: Flame },
     { id: 'antropometria', label: 'Antropometria', icon: Ruler },
     { id: 'allenamento', label: 'Allenamento', icon: Dumbbell },
-    { id: 'attrezzatura', label: 'Attrezzatura', icon: Settings, badge: 'Prossimamente' },
+    { id: 'attrezzatura', label: 'Attrezzatura', icon: Settings },
     { id: 'nutrizione', label: 'Nutrizione', icon: Apple, badge: 'Prossimamente' },
     { id: 'insight', label: 'Insight', icon: PieChart, badge: 'Prossimamente' },
     { id: 'logbook', label: 'Logbook', icon: FileText }
@@ -1240,6 +1241,84 @@ export default function ClientWorkspace({
                 </div>
               )}
             </div>
+
+            {/* Card G: Ambiente di allenamento */}
+            <div className="bg-[#181818] border border-white/5 rounded-2xl p-5 space-y-4 md:col-span-2">
+              <div className="flex items-center justify-between border-b border-white/5 pb-3">
+                <div className="flex items-center gap-2">
+                  <Settings className="w-4 h-4 text-white/40" />
+                  <h3 className="text-xs font-black uppercase tracking-wider text-white">Ambiente d'Allenamento</h3>
+                </div>
+                <button
+                  onClick={() => setClientWorkspaceTab('attrezzatura')}
+                  className="text-[10px] font-black uppercase tracking-wider text-white/60 hover:text-white transition-colors cursor-pointer"
+                >
+                  Gestisci →
+                </button>
+              </div>
+
+              {(client.trainingEnvironments ?? []).length > 0 ? (
+                (() => {
+                  const envs = client.trainingEnvironments ?? [];
+                  const activeEnv = envs.find(e => e.stato === 'attivo') || envs[0];
+                  const totalInEnv = activeEnv.equipment.reduce((acc, eq) => acc + (eq.quantita ?? 1), 0);
+                  const availInEnv = activeEnv.equipment.filter(eq => eq.disponibilita === 'disponibile').reduce((acc, eq) => acc + (eq.quantita ?? 1), 0);
+                  const limitInEnv = activeEnv.equipment.filter(eq => eq.disponibilita === 'disponibilita_limitata').reduce((acc, eq) => acc + (eq.quantita ?? 1), 0);
+
+                  return (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                      <div className="sm:col-span-2 space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <p className="font-extrabold text-sm text-white">{activeEnv.nome}</p>
+                          <span className={`text-[8px] px-1.5 py-0.5 rounded font-black uppercase tracking-wider ${
+                            activeEnv.stato === 'attivo' ? 'bg-emerald-500/10 text-emerald-400' :
+                            activeEnv.stato === 'secondario' ? 'bg-blue-500/10 text-blue-400' : 'bg-neutral-800 text-white/55'
+                          }`}>
+                            {activeEnv.stato}
+                          </span>
+                        </div>
+                        <p className="text-white/50 text-[11px]">
+                          Tipo: {ENV_TYPE_LABELS[activeEnv.tipo]}
+                          {activeEnv.nomeStruttura && ` presso ${activeEnv.nomeStruttura}`}
+                        </p>
+                        {activeEnv.limitazioniGenerali && (
+                          <p className="text-[10px] text-amber-400 font-medium leading-relaxed">
+                            ⚠️ {activeEnv.limitazioniGenerali}
+                          </p>
+                        )}
+                      </div>
+                      <div className="bg-black/20 p-3 rounded-xl border border-white/5 flex flex-col justify-center space-y-1.5">
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-white/45">Macchinari:</span>
+                          <span className="text-white font-extrabold">{totalInEnv}</span>
+                        </div>
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-white/45">Disponibili:</span>
+                          <span className="text-emerald-400 font-extrabold">{availInEnv}</span>
+                        </div>
+                        {limitInEnv > 0 && (
+                          <div className="flex justify-between text-[11px]">
+                            <span className="text-white/45">Limitate:</span>
+                            <span className="text-amber-400 font-extrabold">{limitInEnv}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()
+              ) : (
+                <div className="flex flex-col items-center justify-center py-4 text-center bg-black/10 border border-dashed border-white/5 rounded-xl">
+                  <p className="text-xs font-bold text-white/50 uppercase tracking-wider">Nessun ambiente registrato</p>
+                  <p className="text-[10px] text-white/30 max-w-xs mt-1 mb-3">Mappa i macchinari e i pesi a disposizione del cliente per ottimizzare i suoi allenamenti.</p>
+                  <button
+                    onClick={() => setClientWorkspaceTab('attrezzatura')}
+                    className="px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 text-white text-[10px] font-bold transition-all border border-white/5 cursor-pointer"
+                  >
+                    Configura Attrezzatura
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -1410,18 +1489,15 @@ export default function ClientWorkspace({
           </div>
         )}
 
-        {/* TAB: ATTREZZATURA (PROSSIMAMENTE) */}
+        {/* TAB: ATTREZZATURA */}
         {clientWorkspaceTab === 'attrezzatura' && (
-          <div className="flex flex-col items-center justify-center p-12 text-center bg-[#181818] border border-white/5 rounded-2xl">
-            <Settings className="w-12 h-12 text-white/10 mb-3" />
-            <h3 className="text-sm font-black uppercase tracking-wider text-white">Attrezzatura Palestra</h3>
-            <p className="text-xs text-white/30 max-w-sm mt-1 mb-4">
-              Configura i macchinari e i pesi disponibili nella palestra o a casa dell'atleta per ottimizzare le schede d'allenamento di conseguenza.
-            </p>
-            <span className="text-[10px] font-black uppercase text-[#CCFF00] tracking-wider px-3 py-1 bg-white/5 rounded-full" style={{ color: config.primaryColor }}>
-              Prossimamente
-            </span>
-          </div>
+          <ClientGymEquipment
+            client={client}
+            config={config}
+            onUpdateClient={onUpdateClient}
+            onShowToast={onShowToast}
+            onShowConfirm={onShowConfirm}
+          />
         )}
 
         {/* TAB: NUTRIZIONE (PROSSIMAMENTE) */}
